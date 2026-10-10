@@ -208,16 +208,49 @@ def css_at_rule_blocks(source: str, header_pattern: str) -> list[str]:
     return blocks
 
 
+OPACITY_RE = re.compile(r"^([-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?)(%?)$", re.IGNORECASE)
+
+
+def hides(prop: str, value: str) -> bool:
+    """True when one CSS property or SVG presentation attribute hides an element.
+
+    Opacity is compared numerically, so `opacity: 0.6` (a dimmed but visible
+    item) is not mistaken for `opacity: 0`, while `0.0`, `.0` and `0%` are.
+    """
+    prop = prop.strip().lower()
+    value = re.sub(r"\s*!\s*important\s*$", "", value.strip(), flags=re.IGNORECASE).lower()
+    if prop == "opacity":
+        match = OPACITY_RE.match(value)
+        return match is not None and float(match.group(1)) <= 0
+    if prop == "visibility":
+        return value in {"hidden", "collapse"}
+    if prop == "display":
+        return value == "none"
+    return False
+
+
+def declarations(block: str) -> list[tuple[str, str]]:
+    """Split a CSS declaration block (or inline style) into (property, value)."""
+    pairs = []
+    for declaration in block.split(";"):
+        prop, colon, value = declaration.partition(":")
+        if colon:
+            pairs.append((prop, value))
+    return pairs
+
+
+def hidden_in_source(item: dict[str, str]) -> bool:
+    """A motion item hidden by its inline style or presentation attributes."""
+    if any(hides(prop, item[prop]) for prop in ("opacity", "visibility", "display") if prop in item):
+        return True
+    return any(hides(prop, value) for prop, value in declarations(item.get("style", "")))
+
+
 def hidden_unscoped_motion_selectors(source: str) -> list[str]:
     """Find selectors that hide motion items before progressive enhancement."""
-    hidden_declaration = re.compile(
-        r"(?:opacity\s*:\s*(?:0+(?:\.0*)?|\.0+)\b|"
-        r"visibility\s*:\s*hidden\b|display\s*:\s*none\b)",
-        re.IGNORECASE,
-    )
     findings: list[str] = []
     for rule in re.finditer(r"([^{}]+)\{([^{}]*)\}", source, re.DOTALL):
-        if not hidden_declaration.search(rule.group(2)):
+        if not any(hides(prop, value) for prop, value in declarations(rule.group(2))):
             continue
         for selector in rule.group(1).split(","):
             item = re.search(r"\[\s*data-motion-item\s*\]", selector, re.IGNORECASE)
@@ -322,8 +355,7 @@ def verify(path: Path) -> list[str]:
         else:
             if item.get("aria-hidden") != "true" or item.get("focusable") != "false":
                 errors.append(f"decorative motion item {index} needs aria-hidden=true and focusable=false")
-        inline = item.get("style", "").replace(" ", "").lower()
-        if any(token in inline for token in ("display:none", "visibility:hidden", "opacity:0")):
+        if hidden_in_source(item):
             errors.append(f"motion item {index} is hidden in source; fallback must be visible")
 
     expected = set(range(1, count + 1)) if count > 0 else set()

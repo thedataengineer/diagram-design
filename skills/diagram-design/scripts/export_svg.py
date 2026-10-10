@@ -101,11 +101,57 @@ def slug_for(path: Path) -> str:
     return slug
 
 
+# Tokens for a depth-aware walk to the matching </svg>. Comments, CDATA and
+# raw-text <script>/<style> bodies are matched whole so an <svg> mentioned in
+# them is not counted.
+SVG_SCAN_RE = re.compile(
+    r"<!--.*?-->|<!\[CDATA\[.*?\]\]>"
+    r"|<(?P<raw>script|style)\b(?:[^>\"']|\"[^\"]*\"|'[^']*')*>.*?</(?P=raw)\s*>"
+    r"|(?P<open><svg\b(?:[^>\"']|\"[^\"]*\"|'[^']*')*?(?P<selfclose>/?)>)"
+    r"|(?P<close></svg\s*>)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
 def extract_first_svg(html: str) -> str:
-    match = SVG_BLOCK_RE.search(html)
-    if not match:
+    """Return the first top-level <svg> element, including nested icon <svg>s."""
+    start = None
+    depth = 0
+    for token in SVG_SCAN_RE.finditer(html):
+        if token.group("open") is not None:
+            if token.group("selfclose"):
+                if start is None:
+                    return token.group(0)
+                continue
+            if start is None:
+                start = token.start()
+            depth += 1
+        elif token.group("close") is not None and start is not None:
+            depth -= 1
+            if depth == 0:
+                return html[start : token.end()]
+    if start is None:
         raise ValueError("no <svg> block found in source")
-    return match.group(0)
+    raise ValueError("first <svg> block is never closed")
+
+
+XML_COMMENT_RE = re.compile(r"<!\[CDATA\[.*?\]\]>|<!--(.*?)-->", re.DOTALL)
+
+
+def sanitize_xml_comments(svg: str) -> str:
+    """Make HTML comments legal XML: no `--` inside, no `-` before `-->`."""
+
+    def repl(match: re.Match[str]) -> str:
+        body = match.group(1)
+        if body is None:
+            return match.group(0)
+        while "--" in body:
+            body = body.replace("--", "- -")
+        if body.endswith("-"):
+            body += " "
+        return f"<!--{body}-->"
+
+    return XML_COMMENT_RE.sub(repl, svg)
 
 
 def _xml_start_tag(match: re.Match[str]) -> str:
@@ -426,32 +472,116 @@ def retarget_root_selector(selector: str, original_id: str, root_id: str) -> str
     return "".join(out)
 
 
+def split_css(css: str) -> list[tuple[str, str | None]]:
+    """Split a stylesheet into top-level ``(prelude, block)`` pairs.
+
+    Statements (``@import …;``) come back with ``block`` set to ``None``.
+    Braces and semicolons inside strings do not count.
+    """
+    items: list[tuple[str, str | None]] = []
+    pos = 0
+    start = 0
+    quote = ""
+    while pos < len(css):
+        char = css[pos]
+        if quote:
+            if char == "\\":
+                pos += 2
+                continue
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char == ";":
+            items.append((css[start:pos].strip(), None))
+            start = pos + 1
+        elif char == "}":
+            start = pos + 1  # stray close brace: skip it
+        elif char == "{":
+            depth = 1
+            end = pos + 1
+            inner_quote = ""
+            while end < len(css) and depth:
+                inner = css[end]
+                if inner_quote:
+                    if inner == "\\":
+                        end += 1
+                    elif inner == inner_quote:
+                        inner_quote = ""
+                elif inner in "\"'":
+                    inner_quote = inner
+                elif inner == "{":
+                    depth += 1
+                elif inner == "}":
+                    depth -= 1
+                end += 1
+            body_end = end - 1 if depth == 0 else end
+            items.append((css[start:pos].strip(), css[pos + 1 : body_end]))
+            pos = end
+            start = pos
+            continue
+        pos += 1
+    return items
+
+
+# Conditional group rules whose children are ordinary rules: keep the
+# condition and scope the children (`@media print { .label {…} }` stays
+# print-only instead of being flattened into an unconditional rule).
+CONDITIONAL_AT_RULES = {"media", "supports", "container", "layer"}
+# Rules whose body is not a list of selector rules; carried verbatim.
+VERBATIM_AT_RULES = {"keyframes", "-webkit-keyframes", "font-face", "property", "counter-style"}
+
+
+def _diagram_rules(css: str, root_id: str, original_root_id: str) -> list[str]:
+    kept: list[str] = []
+    for prelude, block in split_css(css):
+        if block is None:
+            continue  # @import/@charset/@namespace statements: fonts are re-added
+        if prelude.startswith("@"):
+            name = re.match(r"@([\w-]+)", prelude)
+            keyword = name.group(1).lower() if name else ""
+            prelude = " ".join(prelude.split())
+            if keyword in CONDITIONAL_AT_RULES:
+                inner = _diagram_rules(block, root_id, original_root_id)
+                if inner:
+                    kept.append(
+                        f"{escape_css_for_xml(prelude)} {{ " + " ".join(inner) + " }"
+                    )
+            elif keyword in VERBATIM_AT_RULES and block.strip():
+                kept.append(escape_css_for_xml(f"{prelude} {{ {' '.join(block.split())} }}"))
+            # Anything else (@page, …) is page chrome and is dropped.
+            continue
+        selector = prelude
+        if original_root_id:
+            selector = retarget_root_selector(selector, original_root_id, root_id)
+        # Retarget before collapsing whitespace: a hex escape consumes one
+        # terminator, so a second space may be the descendant combinator.
+        selector = " ".join(selector.split())
+        body = block.strip()
+        if not selector or not body:
+            continue
+        inherited = body_inherited_css(selector, body, root_id)
+        if inherited:
+            kept.append(escape_css_for_xml(inherited))
+        if is_chrome_selector(selector):
+            continue
+        # Escape rule text before it lands in SVG XML (e.g. content:"R&D").
+        kept.append(escape_css_for_xml(f"{scope_selector(selector, root_id)} {{ {body} }}"))
+    return kept
+
+
 def diagram_css_from_html(html: str, root_id: str, original_root_id: str = "") -> str:
-    """Filter page <style> rules down to diagram rules, scoped under root_id."""
+    """Filter page <style> rules down to diagram rules, scoped under root_id.
+
+    Conditional group rules (@media, @supports, …) are kept as groups around
+    their scoped children; @keyframes and @font-face are carried verbatim.
+    """
     kept: list[str] = []
     for block in STYLE_BLOCK_RE.findall(html):
         # A comment before a rule would otherwise become part of its selector
         # (`/* Tokens */ :root` is not recognised as `:root`).
         block = CSS_COMMENT_RE.sub("", block)
-        for match in RULE_RE.finditer(block):
-            selector = match.group(1).strip()
-            if original_root_id:
-                selector = retarget_root_selector(selector, original_root_id, root_id)
-            # Retarget before collapsing whitespace: a hex escape consumes one
-            # terminator, so a second space may be the descendant combinator.
-            selector = " ".join(selector.split())
-            body = match.group(2).strip()
-            if not selector or not body:
-                continue
-            inherited = body_inherited_css(selector, body, root_id)
-            if inherited:
-                kept.append(escape_css_for_xml(inherited))
-            if is_chrome_selector(selector):
-                continue
-            # Escape rule text before it lands in SVG XML (e.g. content:"R&D").
-            kept.append(
-                escape_css_for_xml(f"{scope_selector(selector, root_id)} {{ {body} }}")
-            )
+        kept.extend(_diagram_rules(block, root_id, original_root_id))
     return "\n      ".join(kept)
 
 
@@ -567,18 +697,62 @@ def namespace_defs_ids(svg: str, prefix: str) -> str:
     )
 
 
+RGBA_VALUE_RE = re.compile(
+    r"rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d*\.?\d+)\s*\)"
+)
+
+
+def _opacity(value: str) -> float | None:
+    value = value.strip()
+    try:
+        number = float(value[:-1]) / 100.0 if value.endswith("%") else float(value)
+    except ValueError:
+        return None
+    return min(max(number, 0.0), 1.0)
+
+
+def _split_rgba_in_tag(match: re.Match[str]) -> str:
+    name, attrs, end = match.groups()
+    pieces = [list(attr.groups()) for attr in TAG_ATTR_RE.finditer(attrs)]
+    names = [piece[1] for piece in pieces]
+    for prop in ("fill", "stroke"):
+        if prop not in names:
+            continue
+        piece = pieces[names.index(prop)]
+        value = (piece[3] or "")[1:-1].strip()
+        if value == "transparent":
+            piece[3] = '"none"'
+            continue
+        rgba = RGBA_VALUE_RE.fullmatch(value)
+        if rgba is None:
+            continue
+        r, g, b, a = rgba.groups()
+        alpha = float(a)
+        piece[3] = '"#{0:02x}{1:02x}{2:02x}"'.format(int(r), int(g), int(b))
+        opacity_name = f"{prop}-opacity"
+        if opacity_name in names:
+            # Multiply into the authored opacity instead of adding a duplicate.
+            existing = pieces[names.index(opacity_name)]
+            current = _opacity((existing[3] or '""')[1:-1])
+            if current is not None:
+                existing[3] = '"{0}"'.format(round(current * alpha, 6))
+            continue
+        at = names.index(prop) + 1
+        pieces.insert(at, [" ", opacity_name, "=", '"{0}"'.format(a)])
+        names.insert(at, opacity_name)
+    rebuilt = "".join(
+        f"{space}{attr}{equals or ''}{value or ''}" for space, attr, equals, value in pieces
+    )
+    return f"<{name}{rebuilt}{end}>"
+
+
 def normalize_rgba_presentation_attrs(svg: str) -> str:
-    """Split rgba()/transparent presentation attrs for strict SVG 1.1 importers."""
+    """Split rgba()/transparent presentation attrs for strict SVG 1.1 importers.
 
-    def repl(match: re.Match[str]) -> str:
-        prop, r, g, b, a = match.groups()
-        return '{0}="#{1:02x}{2:02x}{3:02x}" {0}-opacity="{4}"'.format(
-            prop, int(r), int(g), int(b), a
-        )
-
-    svg = RGBA_ATTR_RE.sub(repl, svg)
-    svg = TRANSPARENT_ATTR_RE.sub(r'\1="none"', svg)
-    return svg
+    Runs per start tag so an authored ``fill-opacity`` is multiplied, not
+    duplicated (a second attribute of the same name is invalid XML).
+    """
+    return START_TAG_RE.sub(_split_rgba_in_tag, svg)
 
 
 def has_diagram_stylesheet(svg: str) -> bool:
@@ -608,7 +782,8 @@ def export_svg_document(html: str, source_path: Path) -> str:
     """Transform source HTML into a standalone SVG document string."""
     slug = slug_for(source_path)
     root_id = f"{slug}-root"
-    svg = normalize_html_entities(xmlify_attributes(extract_first_svg(html)))
+    svg = sanitize_xml_comments(extract_first_svg(html))
+    svg = normalize_html_entities(xmlify_attributes(svg))
     ensure_viewbox(svg)
     svg = ensure_xmlns(svg)
     opening = START_TAG_RE.match(svg)

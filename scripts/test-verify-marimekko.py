@@ -309,6 +309,57 @@ def run_cases(h: Harness) -> int:
     h.expect_clean("upper-case tag and attribute names parse as their canonical form",
                    honest().replace("<rect ", "<RECT ").replace("data-amount=", "DATA-AMOUNT="))
 
+    # ── An invisible segment still occupies the arithmetic ────────────────
+    # Following verify-sankey: a mark that renders nothing while every number
+    # this checker reads stays correct is a finding. Each carrier is applied to
+    # the shipped web × Linux segment, which then still tiles, still has its
+    # share, and is simply not on the page.
+    shipped = SHIPPED[0].read_text(encoding="utf-8")
+    anchor = 'data-column="web" data-segment="Linux" data-amount="2140" fill="rgba(45,49,66,0.16)"'
+    if anchor not in shipped:
+        h.check("shipped web × Linux segment anchor is present", False, "anchor moved")
+    hidden_carriers = (
+        ("visibility=\"hidden\"", anchor + ' visibility="hidden"'),
+        ("visibility=\"collapse\"", anchor + ' visibility="collapse"'),
+        ("display=\"none\"", anchor + ' display="none"'),
+        ("opacity=\"0\"", anchor + ' opacity="0"'),
+        ("opacity=\"0%\"", anchor + ' opacity="0%"'),
+        ("fill=\"none\"", anchor.replace('fill="rgba(45,49,66,0.16)"', 'fill="none"')),
+        ("a zero-alpha fill", anchor.replace('fill="rgba(45,49,66,0.16)"',
+                                             'fill="rgba(45,49,66,0)"')),
+        ("fill-opacity=\"0\"", anchor + ' fill-opacity="0"'),
+        ("style visibility:hidden", anchor + ' style="visibility: hidden"'),
+        ("style display:none", anchor + ' style="display:none"'),
+        ("style opacity:0", anchor + ' style="opacity: 0"'),
+        ("style fill:none", anchor + ' style="fill: none"'),
+    )
+    for what, replacement in hidden_carriers:
+        h.expect_finding("a segment hidden by %s is rejected" % what,
+                         shipped.replace(anchor, replacement, 1),
+                         r"web × Linux .*renders nothing", "example-marimekko.html")
+    h.expect_finding("a segment inside a <g visibility=\"hidden\"> is rejected",
+                     document('<g visibility="hidden">\n',
+                              segment("A", "Linux", 300, XA, TOP, WA, 228.0),
+                              "</g>\n",
+                              segment("A", "macOS", 200, XA, TOP + 228, WA, 152.0),
+                              segment("B", "Linux", 240, XB, TOP, WB, 304.0),
+                              segment("B", "Windows", 60, XB, TOP + 304, WB, 76.0),
+                              segment("C", "Linux", 100, XC, TOP, WC, HEIGHT),
+                              CAPTIONS, KEYS),
+                     r"A × Linux .*renders nothing")
+    h.expect_finding("a segment inside a <g style=\"opacity:0\"> is rejected",
+                     document('<g style="opacity:0">\n', columns(), "</g>\n", CAPTIONS, KEYS),
+                     r"renders nothing")
+    h.expect_finding("a stylesheet rule hiding segment rects is rejected",
+                     honest().replace("</style>", " rect[data-segment] { visibility: hidden; }</style>"),
+                     r"hides .*segment")
+    h.expect_finding("a stylesheet rule zeroing a <g>'s opacity is rejected",
+                     honest().replace("</style>", " svg g { opacity: 0 }</style>"),
+                     r"hides .*segment")
+    h.expect_clean("a half-opacity segment still renders and passes",
+                   shipped.replace(anchor, anchor + ' opacity="0.5"', 1),
+                   "example-marimekko.html")
+
     # ── Width is category share ───────────────────────────────────────────
     h.expect_finding("a column drawn wider than its share is rejected",
                      document(columns(wa=WA + 150, xb=XB + 150, xc=XC + 150), CAPTIONS, KEYS),

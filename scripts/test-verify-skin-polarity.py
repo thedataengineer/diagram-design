@@ -728,6 +728,55 @@ def main():
             else:
                 print(f"OK: {label} preserves complete visible copy")
 
+    # Visible copy is not limited to text/p/li: a legend set in a <div>, a
+    # <span>, a table cell, a <small> note or an SVG <title> tooltip is read by
+    # the same reader. Each wrapper must carry a false claim to a finding and a
+    # true one to a pass, or the fail-closed promise has a hole per element.
+    with tempfile.TemporaryDirectory(prefix="polarity-wrappers-") as raw:
+        directory = Path(raw)
+        wrappers = (
+            ("div", "<div>{}</div>"),
+            ("span", "<span>{}</span>"),
+            ("td", "<table><tr><td>{}</td></tr></table>"),
+            ("th", "<table><tr><th>{}</th></tr></table>"),
+            ("small", "<small>{}</small>"),
+            ("label", "<label>{}</label>"),
+            ("dd", "<dl><dt>Key</dt><dd>{}</dd></dl>"),
+            ("strong-in-div", "<div><strong>darker</strong> is larger{}</div>"),
+        )
+        for name, wrapper in wrappers:
+            claim = "" if name == "strong-in-div" else "Darker is larger"
+            markup = wrapper.format(claim)
+            wrong = dark_source.replace("</body>", markup + "</body>", 1)
+            code, output = run(write(directory, f"{name}-wrong.html", wrong))
+            if not code or "but the ramp draws larger as" not in output:
+                failures.append(f"false claim in <{name}> was not read: {output}")
+            else:
+                print(f"OK: false claim in <{name}> is rejected")
+            right = light_source.replace("</body>", markup + "</body>", 1)
+            code, output = run(write(directory, f"{name}-right.html", right))
+            if code:
+                failures.append(f"true claim in <{name}> was rejected: {output}")
+            else:
+                print(f"OK: true claim in <{name}> passes")
+        svg_title = dark_source.replace("</svg>", "<g><title>Darker is larger</title></g></svg>", 1)
+        code, output = run(write(directory, "svg-title-wrong.html", svg_title))
+        if not code or "but the ramp draws larger as" not in output:
+            failures.append(f"false claim in an SVG <title> was not read: {output}")
+        else:
+            print("OK: false claim in an SVG <title> is rejected")
+        hidden = dark_source.replace(
+            "</body>",
+            "<script>const note = '<div>Darker is larger</div>';</script>"
+            "<style>/* <div>Darker is larger</div> */</style></body>",
+            1,
+        )
+        code, output = run(write(directory, "script-style.html", hidden))
+        if code:
+            failures.append(f"script/style text was read as visible copy: {output}")
+        else:
+            print("OK: script and style bodies are not visible copy")
+
     for failure in failures:
         print("FAIL: {}".format(failure))
     if failures:

@@ -53,7 +53,13 @@ Nine invariants, in the spirit of ADR 0005 and the treemap checker:
    segment behind the attributes this checker measures. A file that presents
    as a marimekko but yields fewer than two parseable columns is a finding,
    never a pass, and so is one whose `data-segment` sits in markup too broken
-   for any <rect> to carry it.
+   for any <rect> to carry it. A segment that PAINTS NOTHING is a finding too,
+   following verify-sankey.py: `visibility` hidden/collapse, `display: none`,
+   `opacity` 0, the `hidden` attribute, `fill` none/transparent/zero-alpha or
+   `fill-opacity` 0 - as an attribute or inline style on the rect, inherited
+   from a <g>/<svg>, or set by a <style> rule that can reach a segment or a
+   <g>/<svg>. An invisible segment still counts in every share, so the
+   arithmetic balances over a gap the reader can see.
 
 Markup is read through the stdlib html.parser.HTMLParser, never a regex, so a
 tag is recognized exactly when a browser would recognize it: a quoted `>`
@@ -194,14 +200,18 @@ ROLES = ("label", "caption", "key")
 class Element:
     """One start tag this checker cares about, as the browser tokenized it."""
 
-    __slots__ = ("tag", "attrs", "line", "body", "ancestor")
+    __slots__ = ("tag", "attrs", "line", "body", "ancestor", "inherited")
 
-    def __init__(self, tag, attrs, line, ancestor):
+    def __init__(self, tag, attrs, line, ancestor, inherited=None):
         self.tag = tag
         self.attrs = attrs          # first-wins dict, names lower-cased, values unescaped
         self.line = line
         self.body = ""              # character data up to the matching end tag
         self.ancestor = ancestor    # how the nearest transformed <g>/<svg> moves it, or None
+        # Paint state handed down by the enclosing <g>/<svg> chain: a
+        # suppressing reason (display/opacity/hidden, which no child can
+        # undo) and the inherited visibility, fill and fill-opacity.
+        self.inherited = inherited or dict(INITIAL_PAINT)
 
 
 class Segment:
@@ -304,10 +314,13 @@ class _Scanner(HTMLParser):
             self.error = "%s: %s" % (type(exc).__name__, exc)
 
     def _ancestor(self):
-        for _tag, how in reversed(self._groups):
+        for _tag, how, _paint in reversed(self._groups):
             if how is not None:
                 return how
         return None
+
+    def _paint(self):
+        return self._groups[-1][2] if self._groups else dict(INITIAL_PAINT)
 
     def handle_starttag(self, tag, attrs):
         self._start(tag, first_wins(attrs), closes=False)
@@ -328,11 +341,11 @@ class _Scanner(HTMLParser):
                     how = "an ancestor <g>/<svg> transform"
                 elif transform_carrier(attrs) is not None:
                     how = "an ancestor <g>/<svg> style transform"
-                self._groups.append((tag, how))
+                self._groups.append((tag, how, descend_paint(self._paint(), attrs, tag)))
             return
         if tag not in ("rect", "circle") and tag not in BODY_TAGS:
             return
-        element = Element(tag, attrs, self.getpos()[0], self._ancestor())
+        element = Element(tag, attrs, self.getpos()[0], self._ancestor(), self._paint())
         if tag == "rect":
             self.rects.append(element)
             return
@@ -364,6 +377,147 @@ class _Scanner(HTMLParser):
             # Innermost only: a <title> tooltip inside a <text> is not part of
             # the rendered label, and the browser does not draw it either.
             self._open[-1][1].body += data
+
+
+# === VISIBILITY ==============================================================
+#
+# Following verify-sankey.py: a segment that renders nothing still occupies
+# every width, height and area share, so the arithmetic balances over a gap the
+# reader can see. Every way the markup can make a segment paint nothing is a
+# finding - on the rect itself, inherited from a <g>/<svg>, or from a <style>
+# rule that can reach it. A presentation attribute and an inline style are
+# both read; the inline style wins, as it does in the browser.
+
+INITIAL_PAINT = {"suppressed": None, "visibility": "visible",
+                 "fill": None, "fill-opacity": None}
+HIDING_PROPS = ("display", "visibility", "opacity", "fill", "fill-opacity")
+CSS_RULE_RE = re.compile(r"([^{}]+)\{([^{}]*)\}")
+
+
+def style_declarations(style: str) -> dict:
+    """An inline style or rule body as {property: value}, last declaration wins."""
+    found = {}
+    for part in blank_css_comments(style or "").split(";"):
+        if ":" not in part:
+            continue
+        prop, value = part.split(":", 1)
+        value = re.sub(r"!\s*important\s*$", "", value.strip(), flags=re.IGNORECASE)
+        found[prop.strip().lower()] = value.strip().lower()
+    return found
+
+
+def paint_property(attrs: dict, prop: str):
+    """The property as the browser resolves it on this element: style beats attribute."""
+    declared = style_declarations(attrs.get("style", ""))
+    if prop in declared:
+        return declared[prop]
+    value = attrs.get(prop)
+    return None if value is None else value.strip().lower()
+
+
+def opacity_value(raw):
+    """A CSS opacity as a 0..1 float, or None if it is absent or unreadable."""
+    if raw is None:
+        return None
+    text = raw.strip()
+    try:
+        return float(text[:-1]) / 100.0 if text.endswith("%") else float(text)
+    except ValueError:
+        return None
+
+
+def colour_is_transparent(raw) -> bool:
+    """Does this fill paint nothing? `none`, `transparent`, or a zero alpha."""
+    if raw is None:
+        return False
+    colour = raw.strip().lower()
+    if colour in ("none", "transparent"):
+        return True
+    hexed = re.fullmatch(r"#([0-9a-f]{4}|[0-9a-f]{8})", colour)
+    if hexed:
+        digits = hexed.group(1)
+        return int(digits[-1] if len(digits) == 4 else digits[-2:], 16) == 0
+    functional = re.fullmatch(r"(?:rgba?|hsla?)\((.*)\)", colour)
+    if functional:
+        parts = [p for p in re.split(r"[\s,/]+", functional.group(1).strip()) if p]
+        if len(parts) == 4:
+            alpha = opacity_value(parts[3])
+            return alpha is not None and alpha <= 0
+    return False
+
+
+def suppressing_reason(attrs: dict):
+    """Why this element and everything under it paints nothing, or None.
+
+    display, opacity and the `hidden` attribute act on the whole subtree and no
+    descendant can undo them - unlike visibility, which a child may restore.
+    """
+    if "hidden" in attrs:
+        return "the hidden attribute"
+    if paint_property(attrs, "display") == "none":
+        return "display: none"
+    opacity = opacity_value(paint_property(attrs, "opacity"))
+    if opacity is not None and opacity <= 0:
+        return "opacity %s" % paint_property(attrs, "opacity")
+    return None
+
+
+def descend_paint(parent: dict, attrs: dict, tag: str) -> dict:
+    """The paint state a <g>/<svg> hands to its children."""
+    state = dict(parent)
+    if state["suppressed"] is None:
+        why = suppressing_reason(attrs)
+        if why is not None:
+            state["suppressed"] = "%s on an ancestor <%s>" % (why, tag)
+    for prop in ("visibility", "fill", "fill-opacity"):
+        value = paint_property(attrs, prop)
+        if value is not None and value not in ("inherit", ""):
+            state[prop] = value
+    return state
+
+
+def invisibility(element: "Element"):
+    """Why this rect paints nothing, phrased for the finding, or None."""
+    attrs = element.attrs
+    inherited = element.inherited
+    if inherited["suppressed"] is not None:
+        return inherited["suppressed"]
+    why = suppressing_reason(attrs)
+    if why is not None:
+        return why
+    visibility = paint_property(attrs, "visibility")
+    if visibility in (None, "inherit"):
+        visibility = inherited["visibility"]
+    if visibility in ("hidden", "collapse"):
+        return "visibility: %s" % visibility
+    fill = paint_property(attrs, "fill")
+    if fill in (None, "inherit"):
+        fill = inherited["fill"]
+    if colour_is_transparent(fill):
+        return "fill %s" % fill
+    fill_opacity = paint_property(attrs, "fill-opacity")
+    if fill_opacity in (None, "inherit"):
+        fill_opacity = inherited["fill-opacity"]
+    value = opacity_value(fill_opacity)
+    if value is not None and value <= 0:
+        return "fill-opacity %s" % fill_opacity
+    return None
+
+
+def hiding_declaration(body: str):
+    """The first declaration in a rule body that makes a rect paint nothing, or None."""
+    declared = style_declarations(body)
+    if declared.get("display") == "none":
+        return "display: none"
+    if declared.get("visibility") in ("hidden", "collapse"):
+        return "visibility: %s" % declared["visibility"]
+    for prop in ("opacity", "fill-opacity"):
+        value = opacity_value(declared.get(prop))
+        if value is not None and value <= 0:
+            return "%s: %s" % (prop, declared[prop])
+    if colour_is_transparent(declared.get("fill")):
+        return "fill: %s" % declared["fill"]
+    return None
 
 
 def parse_document(source: str) -> _Scanner:
@@ -685,6 +839,42 @@ def check_transforms(doc: _Scanner, segments: list, findings: list, name: str) -
                 % (name, element.line + css.count("\n", 0, found.start()),
                    found.group("prop").lower())
             )
+
+
+def selector_names_group(selector: str) -> bool:
+    """Is the subject of any alternative a <g> or <svg> - a segment's possible ancestor?"""
+    for alternative in selector.split(","):
+        compounds = [part for part in re.split(r"[\s>+~]+", alternative.strip()) if part]
+        if compounds and re.match(r"(?:g|svg)(?![\w-])", compounds[-1], re.IGNORECASE):
+            return True
+    return False
+
+
+def check_visibility(doc: _Scanner, segments: list, findings: list, name: str) -> None:
+    """Every segment must paint: an invisible one still counts in every share."""
+    for segment in segments:
+        why = invisibility(segment.element)
+        if why is not None:
+            findings.append(
+                "%s:%d: segment %s × %s renders nothing (%s) — it still counts in "
+                "every width, height and area share, so the figure balances over a "
+                "gap the reader can see. Draw it, or omit it and its amount"
+                % (name, segment.line, segment.column, segment.series, why)
+            )
+    for element in doc.styles:
+        css = blank_css_comments(element.body)
+        for rule in CSS_RULE_RE.finditer(css):
+            selector, body = rule.group(1), rule.group(2)
+            why = hiding_declaration(body)
+            if why is None:
+                continue
+            if selector_reaches_segment(selector, segments) or selector_names_group(selector):
+                findings.append(
+                    "%s:%d: a CSS rule `%s { %s }` hides what may be a segment or its "
+                    "ancestor — a hidden segment still counts in every share. Remove it"
+                    % (name, element.line + css.count("\n", 0, rule.start()),
+                       selector.strip(), why)
+                )
 
 
 def check_plot(columns: list, findings: list, name: str) -> bool:
@@ -1040,6 +1230,7 @@ def check_source(path: Path, raw: str) -> list:
         return findings
 
     check_transforms(doc, segments, findings, path.name)
+    check_visibility(doc, segments, findings, path.name)
     if check_plot(columns, findings, path.name):
         check_tiling(columns, findings, path.name)
         check_shares(columns, findings, path.name)

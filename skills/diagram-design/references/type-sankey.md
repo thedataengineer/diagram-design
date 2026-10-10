@@ -62,7 +62,7 @@ Over budget → split into two linked Sankeys (e.g. an overview stage-1→stage-
 - **Per-flow rainbow coloring.** One `muted` treatment for ordinary flows, one `accent` treatment for the flow that carries the editorial point — never a distinct hue per ribbon.
 - **Using Sankey for a simple funnel.** A single narrowing quantity with no splits or merges is a pyramid/funnel, not a Sankey.
 - **Using Sankey for a plain step sequence.** If nothing splits, merges, or varies in thickness, it's a process diagram — the whole point of Sankey is quantity that branches.
-- **Stacking two flows at the same node-edge offset.** Every flow gets its own offset range within the node's height, in a consistent top-to-bottom order — never two ribbons overlapping at the same attach point.
+- **Stacking two flows at the same node-edge offset.** Every flow gets its own offset range within the node's height, in a consistent top-to-bottom order — never two ribbons overlapping at the same attach point. `verify-sankey.py` rejects overlapping attach intervals on either side of a node, and any ribbon drawn upside down (top edge below bottom edge) or whose outline strays to an x other than its two ends.
 - **Percentages or quantities that don't sum to the source total.** Every node's outgoing (or incoming) flows must sum to that node's own height. A Sankey that doesn't balance reads as an error, not a design choice.
 
 ## Examples

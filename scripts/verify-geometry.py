@@ -98,7 +98,7 @@ def parse_rects(source: str) -> list[Rect]:
     for tag, attrs, start, frame in shapes(source):
         if tag != "rect" or frame is None:
             continue
-        x, y, w, h = (number(attrs, key) for key in ("x", "y", "width", "height"))
+        x, y, w, h = rect_box(attrs)
         if None in (x, y, w, h):
             continue
         rects.append(Rect(x + frame[0], y + frame[1], w, h,
@@ -147,9 +147,38 @@ SMALL_PORT_MIN = 8.0  # rule 4's floor for very small boxes...
 SMALL_EDGE = 48.0  # ...meaning an edge shorter than this
 
 
+# One attribute: double-quoted, single-quoted, unquoted, or a bare name.
+ATTRIBUTE_RE = re.compile(
+    r"""([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?"""
+)
+
+
 def attribute(attrs: str, name: str) -> str | None:
-    match = re.search(rf'(?<![\w-]){re.escape(name)}\s*=\s*"([^"]*)"', attrs)
-    return match.group(1) if match else None
+    """Read one attribute however it is quoted, as an HTML parser would.
+
+    Tokenizing the whole tag keeps a name inside another attribute's value
+    (`aria-label="x=1"`) from matching.
+    """
+    wanted = name.lower()
+    for match in ATTRIBUTE_RE.finditer(attrs):
+        if match.group(1).lower() == wanted:
+            for value in match.group(2, 3, 4):
+                if value is not None:
+                    return value
+            return ""
+    return None
+
+
+def rect_box(attrs: str) -> tuple[float | None, ...]:
+    """A rect's x, y, width, height. SVG defaults a missing x or y to 0; a
+    missing width or height stays None, since such a rect paints nothing."""
+    x, y = (number(attrs, key) for key in ("x", "y"))
+    return (
+        0.0 if x is None and attribute(attrs, "x") is None else x,
+        0.0 if y is None and attribute(attrs, "y") is None else y,
+        number(attrs, "width"),
+        number(attrs, "height"),
+    )
 
 
 def number(attrs: str, name: str) -> float | None:
@@ -393,7 +422,7 @@ def stroked_nodes(source: str) -> list[Rect]:
     for tag, attrs, start, frame in shapes(source):
         if tag != "rect" or frame is None:
             continue
-        x, y, w, h = (number(attrs, key) for key in ("x", "y", "width", "height"))
+        x, y, w, h = rect_box(attrs)
         if None in (x, y, w, h) or w < NODE_MIN_W or h < NODE_MIN_H:  # type: ignore[operator]
             continue
         stroke = (attribute(attrs, "stroke") or "none").strip().lower()

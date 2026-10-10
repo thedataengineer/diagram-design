@@ -343,6 +343,37 @@ def run_cases(h: Harness) -> int:
         document(inflated, TICKS),
         r"bubble 'Stream' declares size 900",
     )
+    # Under 1px, but 18% too much ink: an absolute radius tolerance passes
+    # exactly the small bubbles most likely to be wrong. Area is relative.
+    shipped = SHIPPED[0].read_text(encoding="utf-8")
+    small = shipped.replace('data-size="60" cx="889.6" cy="334.5" r="10.8"',
+                            'data-size="60" cx="889.6" cy="334.5" r="11.75"', 1)
+    if small == shipped:
+        h.count += 1
+        h.failures += 1
+        print("FAIL  shipped Reports bubble anchor moved; fixture not built")
+    else:
+        h.expect_finding(
+            "the shipped smallest bubble drawn 0.95px (+18% area) too large is reported",
+            small, r"bubble 'Reports' declares size 60", name="example-bubble.html",
+        )
+    sub_pixel = honest_block([("Edge", 100, 1.0, 400), ("Queue", 200, 2.0, 100),
+                              ("Batch", 300, 0.5, 225), ("Stream", 150, 1.5, 900)],
+                             focal="none")
+    sub_pixel += bubble("Webhook", 400, 3.0, 25, drawn_r=7.6)   # honest r=7.0
+    h.expect_finding(
+        "a small bubble drawn 0.6px (+18% area) too large is reported by name",
+        document(sub_pixel, TICKS),
+        r"bubble 'Webhook' declares size 25",
+    )
+    rounded = honest_block([("Edge", 100, 1.0, 400), ("Queue", 200, 2.0, 100),
+                            ("Batch", 300, 0.5, 225), ("Stream", 150, 1.5, 900)],
+                           focal="none")
+    rounded += bubble("Webhook", 400, 3.0, 25, drawn_r=7.1)    # 0.1px rounding
+    h.expect_clean(
+        "a small bubble off by 0.1px of radius rounding passes",
+        document(rounded, TICKS),
+    )
     h.expect_finding(
         "a non-positive size is reported, not scaled",
         document(honest_block(focal="none"),

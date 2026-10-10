@@ -17,6 +17,7 @@ Three modes cover the release flow (ADR 0009):
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import subprocess
@@ -44,6 +45,25 @@ SHARED_MANIFEST_FIELDS = (
     "keywords",
 )
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+
+
+def load_bumper() -> Any:
+    """Load bump-plugin-version.py by path (works under ``python3 -I``).
+
+    The PR gate must accept exactly the SKILL.md ``metadata.version`` form the
+    post-merge bumper can rewrite, so both use its locator instead of two
+    parsers that can drift.
+    """
+    path = Path(__file__).resolve().parent / "bump-plugin-version.py"
+    spec = importlib.util.spec_from_file_location("bump_plugin_version", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"could not load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+BUMPER = load_bumper()
 
 
 def load_json(path: Path, errors: list[str]) -> dict[str, Any] | None:
@@ -446,9 +466,23 @@ def verify_skill_metadata_version(root: Path, manifests: dict[str, dict[str, Any
     if not skill.is_file():
         errors.append(f"missing {skill.relative_to(root).as_posix()}")
         return
-    declared = parse_frontmatter_metadata_version(skill.read_text(encoding="utf-8"))
-    if declared is None:
-        errors.append("SKILL.md frontmatter has no metadata.version")
+    text = skill.read_text(encoding="utf-8")
+    try:
+        _, _, located = BUMPER.locate_skill_metadata_version(text)
+    except BUMPER.PackageVersionError as exc:
+        located, problem = None, str(exc)
+    # The structural parse keeps failing closed on malformed surrounding
+    # frontmatter; the bumper's locator pins the one rewritable form.
+    declared = parse_frontmatter_metadata_version(text)
+    if declared is None or located is None:
+        detail = f" the auto-bump can rewrite ({problem})" if located is None else ""
+        errors.append(f"SKILL.md frontmatter has no metadata.version{detail}")
+        return
+    if declared != located.group("value"):
+        errors.append(
+            f"SKILL.md metadata.version is ambiguous: parsed {declared!r}, "
+            f"auto-bump would rewrite {located.group('value')!r}"
+        )
         return
     manifest_version = str(manifests["Claude"].get("version", ""))
     expected = ".".join(manifest_version.split(".")[:2])

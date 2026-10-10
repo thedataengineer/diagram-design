@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
@@ -600,6 +603,192 @@ def test_auto_bump_workflow_allowlists() -> None:
     print("OK: prepare and publish workflow allowlists match bumper paths")
 
 
+# SKILL.md frontmatter bodies under the closing `---`. `accept` is the single
+# contract the PR gate, the bumper, and the publish validator must share: one
+# direct double-quoted MAJOR.MINOR child of the top-level `metadata:` block.
+METADATA_VERSION_FORMS = (
+    ("direct double-quoted", 'metadata:\n  version: "1.2"\n', True),
+    ("direct with trailing comment", 'metadata:\n  version: "1.2"  # tracks manifests\n', True),
+    ("four-space indentation", 'metadata:\n    owner: test\n    version: "1.2"\n', True),
+    (
+        "nested compat.version beside direct version",
+        'metadata:\n  compat:\n    version: "1.0"\n  version: "1.2"\n',
+        True,
+    ),
+    ("unquoted", "metadata:\n  version: 1.2\n", False),
+    ("single-quoted", "metadata:\n  version: '1.2'\n", False),
+    ("three-part version", 'metadata:\n  version: "1.2.3"\n', False),
+    ("only nested compat.version", 'metadata:\n  compat:\n    version: "1.2"\n', False),
+    (
+        "nested compat.version beside unquoted direct version",
+        'metadata:\n  compat:\n    version: "1.0"\n  version: 1.2\n',
+        False,
+    ),
+    ("flow mapping", 'metadata: {version: "1.2"}\n', False),
+)
+
+
+def skill_text(body: str) -> str:
+    return f"---\nname: {PLUGIN_NAME}\n{body}---\n"
+
+
+def publish_validator_script() -> str:
+    workflow = AUTO_BUMP_WORKFLOW.read_text(encoding="utf-8")
+    match = re.search(
+        r"^(?P<indent> +)python3(?: -I)? - <<'PY'\n(?P<body>.*?)^(?P=indent)PY$",
+        workflow,
+        re.MULTILINE | re.DOTALL,
+    )
+    if match is None:
+        raise AssertionError("could not find the publish validator heredoc")
+    return textwrap.dedent(match.group("body"))
+
+
+def run_publish_validator(root: Path, part: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-I", "-"],
+        input=publish_validator_script(),
+        cwd=root,
+        env={**os.environ, "BUMP_PART": part},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def naive_skill_bump(body: str) -> str:
+    """What a careless rewrite of the first version-looking value produces."""
+    return re.sub(r"""version: (["']?)1\.[02](?:\.3)?\1""", r'version: \g<1>1.3\1', body, count=1)
+
+
+def test_metadata_version_forms() -> None:
+    for label, body, accept in METADATA_VERSION_FORMS:
+        # PR gate.
+        with package_repo() as root:
+            set_versions(root, "1.2.4", "1.2.4")
+            (root / BUMP.SKILL_PATH).write_text(skill_text(body), encoding="utf-8")
+            errors = VERIFY.verify_package(root, "HEAD")
+            if accept and errors:
+                raise AssertionError(f"verifier rejected {label}: {errors}")
+            if not accept:
+                expect_failure(
+                    f"verifier: metadata.version {label}", errors, "metadata.version"
+                )
+
+        # Post-merge bumper.
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            seed_package(root)
+            (root / BUMP.SKILL_PATH).write_text(skill_text(body), encoding="utf-8")
+            manifests_before = {
+                relative: (root / relative).read_text(encoding="utf-8")
+                for relative in BUMP.MANIFEST_PATHS
+            }
+            try:
+                BUMP.bump(root, "minor")
+            except BUMP.PackageVersionError as exc:
+                if accept:
+                    raise AssertionError(f"bumper rejected {label}: {exc}") from exc
+                if "metadata.version" not in str(exc):
+                    raise AssertionError(f"bumper {label}: unclear error {exc}") from exc
+                after = {
+                    relative: (root / relative).read_text(encoding="utf-8")
+                    for relative in BUMP.MANIFEST_PATHS
+                }
+                if after != manifests_before:
+                    raise AssertionError(f"bumper {label}: manifests changed on failure")
+            else:
+                if not accept:
+                    raise AssertionError(f"bumper accepted {label}")
+                expected = skill_text(body.replace('version: "1.2"', 'version: "1.3"'))
+                actual = (root / BUMP.SKILL_PATH).read_text(encoding="utf-8")
+                if actual != expected:
+                    raise AssertionError(
+                        f"bumper {label}: expected {expected!r}, got {actual!r}"
+                    )
+        print(f"OK: verifier and bumper agree on metadata.version {label}")
+
+        # Publish-job validator, run from the workflow text itself.
+        with package_repo() as root:
+            (root / BUMP.SKILL_PATH).write_text(skill_text(body), encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(
+                ["git", "commit", "-q", "--allow-empty", "-m", f"base: {label}"],
+                cwd=root,
+                check=True,
+            )
+            if accept:
+                BUMP.bump(root, "minor")
+                result = run_publish_validator(root, "minor")
+                if result.returncode != 0:
+                    raise AssertionError(
+                        f"publish validator rejected bumped {label}: {result.stderr}"
+                    )
+                if "compat" in body:
+                    skill = root / BUMP.SKILL_PATH
+                    skill.write_text(
+                        skill.read_text(encoding="utf-8").replace(
+                            'version: "1.0"', 'version: "1.3"'
+                        ),
+                        encoding="utf-8",
+                    )
+                    tampered = run_publish_validator(root, "minor")
+                    if tampered.returncode == 0:
+                        raise AssertionError(
+                            "publish validator accepted a rewritten compat.version"
+                        )
+            else:
+                set_existing_versions(root, "1.3.0")
+                if "compat" in body and "  version: 1.2" in body:
+                    # The pre-fix bumper rewrote the nested compat.version.
+                    candidate = body.replace('version: "1.0"', 'version: "1.3"')
+                else:
+                    candidate = naive_skill_bump(body)
+                (root / BUMP.SKILL_PATH).write_text(
+                    skill_text(candidate), encoding="utf-8"
+                )
+                result = run_publish_validator(root, "minor")
+                if result.returncode == 0:
+                    raise AssertionError(f"publish validator accepted {label}")
+        print(f"OK: publish validator agrees on metadata.version {label}")
+
+
+def publish_job(workflow: str) -> str:
+    _, found, rest = workflow.partition("\n  publish:\n")
+    if not found:
+        raise AssertionError("auto-bump workflow has no publish job")
+    return rest
+
+
+def test_auto_bump_publish_hardening() -> None:
+    publish = publish_job(AUTO_BUMP_WORKFLOW.read_text(encoding="utf-8"))
+    invocations = re.findall(r"\bpython3?\b[^\n]*", publish)
+    if not invocations:
+        raise AssertionError("publish job runs no python; update this test")
+    for invocation in invocations:
+        if not re.match(r"python3 -I\b", invocation):
+            raise AssertionError(
+                "publish job python must run isolated (python3 -I) so a merged "
+                f"top-level module cannot shadow the stdlib: {invocation!r}"
+            )
+    git_lines = [
+        line.strip()
+        for line in publish.splitlines()
+        if re.search(r"\bgit\b.*\b(?:commit|push)\b", line)
+        and not line.strip().startswith("#")
+    ]
+    for line in git_lines:
+        if "core.hooksPath=/dev/null" not in line or "--no-verify" not in line:
+            raise AssertionError(f"publish git commit/push must disable hooks: {line!r}")
+    push_lines = [line for line in git_lines if " push " in line]
+    if not push_lines:
+        raise AssertionError("publish job has no git push")
+    if "AUTO_BUMP_TOKEN@" in publish or "set-url" in publish:
+        raise AssertionError("publish job must not write the token into a remote URL")
+    print("OK: publish job runs python isolated and pushes without repository hooks")
+
+
+
 def commit_all(root: Path, message: str) -> str:
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     subprocess.run(["git", "commit", "-qm", message], cwd=root, check=True)
@@ -706,6 +895,8 @@ def test_ci_version_gate_executes() -> None:
         step.write_text(ci_version_gate_script(), encoding="utf-8")
         (root / "scripts").mkdir()
         shutil.copy2(VERIFY_SCRIPT, root / "scripts" / VERIFY_SCRIPT.name)
+        # The verifier shares the bumper's metadata.version locator.
+        shutil.copy2(BUMP_SCRIPT, root / "scripts" / BUMP_SCRIPT.name)
         commit_all(root, "add the verifier")
         main_branch = git(root, "symbolic-ref", "--short", "HEAD")
         git(root, "checkout", "-q", "-b", "contributor")
@@ -793,6 +984,8 @@ def main() -> int:
     test_verifier()
     test_bumper()
     test_auto_bump_workflow_allowlists()
+    test_metadata_version_forms()
+    test_auto_bump_publish_hardening()
     test_pull_request_merge_base()
     test_ci_version_gate_wiring()
     test_ci_version_gate_executes()

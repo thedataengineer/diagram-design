@@ -23,7 +23,9 @@ three variants at a time.
 2. The rule is enforced by `scripts/verify-geometry.py`, which parses `<rect>` coordinates and
    reports a mask that overlaps a node **declared later in the document**. Document order is
    the criterion, not overlap alone: a mask over an earlier-painted zone container stays on
-   top and is legal, and a mask fully inside a node is a badge chip.
+   top and is legal, and a mask fully inside a node is a badge chip. A `<rect>` without `x` or
+   `y` is placed at 0 in its translated frame, as SVG renders it, and attributes are read
+   whether double-quoted, single-quoted, or unquoted.
 3. The checker carries adversarial tests (`scripts/test-verify-geometry.py`) covering both
    polarities — a clipped mask must be reported, and the legal cases must not be.
 

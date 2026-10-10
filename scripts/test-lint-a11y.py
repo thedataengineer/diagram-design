@@ -556,6 +556,117 @@ def main() -> int:
             directory,
         )
 
+        def slugged(slug: str) -> str:
+            return VALID_SVG.replace("fixture-title", f"{slug}-title").replace(
+                "fixture-desc", f"{slug}-desc"
+            )
+
+        # Color normalization: named colors, rgb()/rgba() in comma and
+        # space/slash syntax with numbers or percentages, hsl()/hsla().
+        color_cases = [
+            ("named-black-fill", '<rect fill="black"/>', "pure-black: pure black black"),
+            ("rgb-space-black", '<rect fill="rgb(0 0 0)"/>', "pure-black: pure black rgb(0 0 0)"),
+            (
+                "rgb-percent-black",
+                '<rect fill="rgb(0%,0%,0%)"/>',
+                "pure-black: pure black rgb(0%,0%,0%)",
+            ),
+            (
+                "rgba-slash-black",
+                '<rect fill="rgba(0 0 0 / .5)"/>',
+                "color: rgba(0 0 0 / .5) is not derived from an allowed palette color",
+            ),
+            (
+                "rgb-red",
+                '<rect fill="rgb(255,0,0)"/>',
+                "color: rgb(255,0,0) is not derived from an allowed palette color",
+            ),
+            (
+                "hsl-red",
+                '<rect fill="hsl(0, 100%, 50%)"/>',
+                "color: hsl(0, 100%, 50%) is not derived from an allowed palette color",
+            ),
+            (
+                "hsla-space-red",
+                '<rect fill="hsla(0deg 100% 50% / 0.4)"/>',
+                "color: hsla(0deg 100% 50% / 0.4) is not derived",
+            ),
+            ("named-red-fill", '<rect fill="red"/>', "color: red is not in the style-guide palette"),
+            (
+                "named-css-color",
+                '<style>.n { stroke: 1px solid Tomato; }</style><rect class="n"/>',
+                "color: Tomato is not in the style-guide palette",
+            ),
+            (
+                "named-style-attr",
+                '<rect style="fill: navy"/>',
+                "color: navy is not in the style-guide palette",
+            ),
+        ]
+        for slug, markup, expected in color_cases:
+            require_lint_finding(
+                slug, slugged(slug).replace("</svg>", markup + "\n</svg>"), expected, directory
+            )
+
+        require_pass(
+            "palette-color-forms",
+            '<style>.p { fill: white; stroke: rgb(45 49 66); color: currentColor; '
+            "background: transparent; border-color: rgba(45, 49, 66, 0.12); "
+            "outline-color: hsl(0 0% 100%); }</style>\n"
+            + slugged("palette-color-forms").replace(
+                "</svg>",
+                '<defs><linearGradient id="fade"><stop offset="0" stop-color="#2d3142"/>'
+                '</linearGradient><marker id="bad"/></defs>\n'
+                '<rect class="p" fill="url(#fade)" stroke="none" color="inherit"/>\n'
+                '<use href="#bad"/><use xlink:href="#bad"/>\n'
+                '<path marker-end="url(#bad)" fill="url( \'#fade\' )" stroke="rgb(100%, 100%, 100%)"/>\n'
+                "<text>The red team uses black boxes.</text>\n</svg>",
+            ),
+            directory,
+        )
+
+        require_pass(
+            "font-style-no-semicolon",
+            slugged("font-style-no-semicolon").replace(
+                "</svg>", '<text style="font-family: Geist">x</text>\n</svg>'
+            ),
+            directory,
+        )
+        require_lint_finding(
+            "font-style-no-semicolon-bad",
+            slugged("font-style-no-semicolon-bad").replace(
+                "</svg>", '<text style="font-family: Comic Sans" fill="#2d3142">x</text>\n</svg>'
+            ),
+            "font-family: unsupported font family: Comic Sans\n",
+            directory,
+        )
+
+        for slug, markup, expected in [
+            (
+                "feimage-remote",
+                '<filter id="f"><feImage href="https://evil.example/x.png"/></filter>',
+                "external-asset: external resource in <feimage> href is not allowed",
+            ),
+            (
+                "feimage-remote-xlink",
+                '<filter id="f"><feImage xlink:href="//evil.example/x.png"/></filter>',
+                "external-asset: external resource in <feimage> xlink:href is not allowed",
+            ),
+            (
+                "svg-script-href",
+                '<script href="https://evil.example/x.js"></script>',
+                "external-asset: external resource in <script> href is not allowed",
+            ),
+            (
+                "pattern-remote-href",
+                '<pattern id="p" href="https://evil.example/p.svg#x"/>',
+                "external-asset: external resource in <pattern> href is not allowed",
+            ),
+        ]:
+            require_lint_finding(
+                slug, slugged(slug).replace("</svg>", markup + "\n</svg>"), expected, directory
+            )
+
         spec = importlib.util.spec_from_file_location("build_icons", BUILD_ICONS)
         if spec is None or spec.loader is None:
             raise AssertionError("generated-icons: could not load build-icons.py")

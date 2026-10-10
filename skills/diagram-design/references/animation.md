@@ -19,7 +19,7 @@ Only `loop` repeats. Queue state, typing, field values, policy outcomes, contain
 
 ## Static-first enhancement contract
 
-1. **Source is complete.** Every semantic node, label, connector, status, and outcome is visible in the HTML/SVG before enhancement. Only selectors below `.motion-ready` may hide or transform them.
+1. **Source is complete.** Every semantic node, label, connector, status, and outcome is visible in the HTML/SVG before enhancement. Only selectors below `.motion-ready` may hide or transform them; `verify-motion.py` rejects a motion item hidden in source by inline `style` or by an `opacity`/`visibility`/`display` presentation attribute. Dimming (`opacity: 0.5`) is not hiding — only an opacity of zero counts.
 2. **Stable capture.** Initial `data-frame="static"`, `?motion=static`, print, no-JS, and standalone SVG export expose the complete frame and hide controls/decorative tokens. Do not capture after an arbitrary delay.
 3. **CSS owns presentation.** Use CSS transitions/keyframes for appearance and travel. Minimal inline JavaScript is allowed only to bind explicit controls, update step/state attributes, schedule deterministic steps, and update the dedicated live-status region. No fetches, markup injection, path measurement, or mutation of semantic diagram labels or values.
 4. **One clock.** Use `--motion-fast: 160ms`, `--motion-step: 480ms`, `--motion-hold: 720ms`, and `--motion-total` ≤ `8000ms`; derive delays from integer steps. No randomness, springs, or transition-event timing.

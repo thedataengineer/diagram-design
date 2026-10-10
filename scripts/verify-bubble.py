@@ -19,7 +19,11 @@ Seven invariants:
    the whole set, i.e. r = K*sqrt(size) for one shared K. This is the type's
    one unforgivable error: a radius proportional to the value shows a 6x
    service as 36x the ink. Per-bubble consistency catches the global version
-   too, because under r = c*size the ratio r^2/size is not constant.
+   too, because under r = c*size the ratio r^2/size is not constant. Checked
+   as RELATIVE area error (AREA_TOLERANCE, with a sub-pixel RADIUS_FLOOR for
+   rounding), as verify-sankey and verify-treemap do: an absolute 1px radius
+   slack is +19% ink on the smallest shipped bubble and under +5% on the
+   largest, so it passed exactly the bubbles most likely to be wrong.
 
 3. ONE ACCENT BUBBLE - at most one bound circle may carry the accent stroke,
    on either skin. A second accent bubble is a second "focal" claim, and the
@@ -172,7 +176,13 @@ ACCENT_RE = re.compile(
 # 0.05px of true; whole-pixel rounding sits within 0.5px. 1.0px clears both
 # and still catches the smallest dishonest nudge worth making.
 RESIDUAL_TOLERANCE = 1.0   # px, drawn centre vs the shared axis scale
-RADIUS_TOLERANCE = 1.0     # px, drawn radius vs the shared area scale
+# Area is checked as RELATIVE error, following verify-sankey/verify-treemap: an
+# absolute radius threshold passes exactly the small bubbles most likely to be
+# wrong (1px on r=10.8 is +19% ink, on r=42 under +5%). 5% clears honest
+# one-decimal rounding on any bubble down to r~4; the absolute floor keeps a
+# 0.1px rounding step on a very small bubble from reading as a lie.
+AREA_TOLERANCE = 5.0       # %, drawn area vs the shared area scale
+RADIUS_FLOOR = 0.15        # px, radius drift always tolerated (rounding)
 VALUE_TOLERANCE = 0.001    # printed tick label vs declared attribute
 # Tick text is placed beside its gridline, not on it: an x tick's anchor sits
 # on the tick, but a y tick's BASELINE hangs ~4px below the line it names.
@@ -692,13 +702,14 @@ def check_area(bubbles: list, findings: list, name: str) -> None:
     for index, b in enumerate(bubbles):
         peers = ratios[:index] + ratios[index + 1:]
         expected = math.sqrt(median(peers) * b.size)
-        if abs(b.r - expected) > RADIUS_TOLERANCE:
+        relative = (b.r * b.r / (expected * expected) - 1) * 100
+        if abs(b.r - expected) > RADIUS_FLOOR and abs(relative) > AREA_TOLERANCE:
             findings.append(
                 "%s:%d: bubble %r declares size %g but draws r=%g where the area "
-                "scale its peers share puts %.1f — area must be proportional to "
-                "the value (r = K*sqrt(size)), and radius-proportional sizing "
-                "shows a 6x value as 36x the ink"
-                % (name, b.line, b.name, b.size, b.r, expected)
+                "scale its peers share puts %.2f — %+.1f%% area; area must be "
+                "proportional to the value (r = K*sqrt(size)), and "
+                "radius-proportional sizing shows a 6x value as 36x the ink"
+                % (name, b.line, b.name, b.size, b.r, expected, relative)
             )
 
 

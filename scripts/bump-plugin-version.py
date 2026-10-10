@@ -76,18 +76,32 @@ def bump(root: Path, part: str = "patch") -> str:
     return version
 
 
-def render_skill_metadata_version(root: Path, version: str) -> tuple[Path, str]:
-    """Keep SKILL.md's hand-maintained metadata.version on the manifest MAJOR.MINOR.
+# The one SKILL.md `metadata.version` form every release tool accepts: a
+# direct child of the top-level block mapping `metadata:`, written as a
+# double-quoted MAJOR.MINOR string. verify-plugin-package.py imports
+# locate_skill_metadata_version() so the PR gate rejects exactly what this
+# bumper cannot rewrite. The auto-bump publish job keeps a self-contained copy
+# of the same rule (it must not import repository code); test-plugin-package.py
+# runs that copy against the same fixtures.
+METADATA_KEY_LINE = re.compile(r"metadata:(?P<value>.*)")
+METADATA_VERSION_LINE = re.compile(
+    r'(?P<head>(?P<indent> +)version: +)"(?P<value>(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))"'
+    r"(?P<tail>(?: +#.*)?)"
+)
+METADATA_VERSION_FORM = 'a direct child of metadata, double-quoted MAJOR.MINOR (version: "2.6")'
 
-    The package verifier fails when the two drift, so the bump must update both
-    sides in one step. Returns the pending write (rendered before any manifest
-    is written, so a malformed SKILL.md aborts the whole bump); raises when the
-    frontmatter does not carry exactly one metadata.version to rewrite.
+
+def locate_skill_metadata_version(text: str) -> tuple[list[str], int, re.Match[str]]:
+    """Find SKILL.md's single rewritable ``metadata.version`` line.
+
+    Returns the file's lines (with endings), the index of the version line, and
+    its METADATA_VERSION_LINE match. Raises PackageVersionError naming the
+    problem for anything else: no frontmatter, no block ``metadata:`` mapping,
+    zero or several direct ``version`` children, or a direct ``version`` that
+    is unquoted, single-quoted, or not MAJOR.MINOR. Deeper keys such as
+    ``metadata.compat.version`` are not ``metadata.version`` and are ignored.
     """
-    path = root / SKILL_PATH
-    if not path.is_file():
-        raise PackageVersionError(f"missing {SKILL_PATH}")
-    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    lines = text.splitlines(keepends=True)
     if not lines or lines[0].strip() != "---":
         raise PackageVersionError(f"{SKILL_PATH} has no YAML frontmatter")
     closing = next(
@@ -96,30 +110,76 @@ def render_skill_metadata_version(root: Path, version: str) -> tuple[Path, str]:
     if closing is None:
         raise PackageVersionError(f"{SKILL_PATH} frontmatter is unterminated")
 
-    major_minor = ".".join(version.split(".")[:2])
-    in_metadata = False
-    replaced = 0
-    for index in range(1, closing):
-        line = lines[index]
-        if re.fullmatch(r"metadata:\s*(?:#.*)?", line.rstrip("\n")):
-            in_metadata = True
-            continue
-        if in_metadata and line.strip() and not line[0].isspace():
-            in_metadata = False
-        if not in_metadata:
-            continue
-        match = re.fullmatch(
-            r'(?P<head>\s+version:\s*)"[0-9][0-9.]*"(?P<tail>\s*(?:#.*)?)',
-            line.rstrip("\n"),
-        )
-        if match is not None:
-            lines[index] = f'{match.group("head")}"{major_minor}"{match.group("tail")}\n'
-            replaced += 1
-    if replaced != 1:
+    bodies = [line.rstrip("\r\n") for line in lines]
+    metadata_rows = [
+        index
+        for index in range(1, closing)
+        if METADATA_KEY_LINE.fullmatch(bodies[index]) is not None
+    ]
+    if len(metadata_rows) != 1:
         raise PackageVersionError(
-            f"{SKILL_PATH} frontmatter must contain exactly one quoted "
-            f"metadata.version; found {replaced}"
+            f"{SKILL_PATH} frontmatter must contain exactly one top-level "
+            f"metadata mapping holding metadata.version; found {len(metadata_rows)}"
         )
+    start = metadata_rows[0]
+    value = METADATA_KEY_LINE.fullmatch(bodies[start]).group("value")  # type: ignore[union-attr]
+    if value.strip() and not value.strip().startswith("#"):
+        raise PackageVersionError(
+            f"{SKILL_PATH} metadata must be a block mapping (flow mappings and "
+            f"inline values are not supported); metadata.version must be "
+            f"{METADATA_VERSION_FORM}"
+        )
+
+    child_indent: int | None = None
+    candidates: list[int] = []
+    for index in range(start + 1, closing):
+        body = bodies[index]
+        if not body.strip() or body.lstrip().startswith("#"):
+            continue
+        indent = len(body) - len(body.lstrip(" "))
+        if indent == 0:
+            break
+        if child_indent is None:
+            child_indent = indent
+        if indent < child_indent:
+            raise PackageVersionError(
+                f"{SKILL_PATH} metadata mapping has inconsistent indentation "
+                f"at line {index + 1}"
+            )
+        if indent == child_indent and re.match(r" *version *:", body):
+            candidates.append(index)
+
+    if len(candidates) != 1:
+        raise PackageVersionError(
+            f"{SKILL_PATH} frontmatter must contain exactly one metadata.version, "
+            f"{METADATA_VERSION_FORM}; found {len(candidates)}"
+        )
+    index = candidates[0]
+    match = METADATA_VERSION_LINE.fullmatch(bodies[index])
+    if match is None or len(match.group("indent")) != child_indent:
+        raise PackageVersionError(
+            f"{SKILL_PATH} metadata.version must be {METADATA_VERSION_FORM}; "
+            f"got {bodies[index].strip()!r}"
+        )
+    return lines, index, match
+
+
+def render_skill_metadata_version(root: Path, version: str) -> tuple[Path, str]:
+    """Keep SKILL.md's hand-maintained metadata.version on the manifest MAJOR.MINOR.
+
+    The package verifier fails when the two drift, so the bump must update both
+    sides in one step. Returns the pending write (rendered before any manifest
+    is written, so a malformed SKILL.md aborts the whole bump); raises when the
+    frontmatter does not carry exactly one rewritable metadata.version.
+    """
+    path = root / SKILL_PATH
+    if not path.is_file():
+        raise PackageVersionError(f"missing {SKILL_PATH}")
+    lines, index, match = locate_skill_metadata_version(path.read_text(encoding="utf-8"))
+    major_minor = ".".join(version.split(".")[:2])
+    line = lines[index]
+    ending = line[len(line.rstrip("\r\n")) :]
+    lines[index] = f'{match.group("head")}"{major_minor}"{match.group("tail")}{ending}'
     return path, "".join(lines)
 
 

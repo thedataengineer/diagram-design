@@ -192,6 +192,49 @@ def main() -> int:
             "a ribbon whose control point collapses onto its endpoint",
         )
 
+        # 6a. Stack two ribbons on the same attach point. The Budget → E2E band
+        #     is lifted to leave from 120-200, on top of the Budget → Unit-tests
+        #     band. Every sum still balances - the bar's outflow is still 240px -
+        #     but 224-304 is now empty and 120-200 is painted twice.
+        case(
+            failures, directory, "stacked",
+            source.replace(
+                "M132,224 C316,224 316,256 500,256 L500,336 C316,336 316,304 132,304 Z",
+                "M132,120 C316,120 316,256 500,256 L500,336 C316,336 316,200 132,200 Z",
+            ),
+            source, "overlap at the same attach point",
+            "two ribbons stacked on the same attach point",
+        )
+
+        # 6b. Run a ribbon's closing edge to the wrong column. The bottom edge of
+        #     Budget → Lint is redrawn from x=880 instead of x=500, so the band
+        #     visibly spills past its target into the outcome column, while the
+        #     four coordinates the sums read are untouched.
+        case(
+            failures, directory, "overrun",
+            source.replace("L500,456 C316,456", "L880,456 C316,456"),
+            source, "end-cap x",
+            "a ribbon whose bottom edge runs to the wrong column",
+        )
+
+        # 6c. An upside-down ribbon carries negative volume and cancels a real
+        #     one. Two extra Budget → Unit-tests bands are added: one 140-200 the
+        #     right way up (+60px) and one drawn top 200, bottom 140 (-60px). Every
+        #     node sum is unchanged, so only a sign check can see it.
+        case(
+            failures, directory, "inverted",
+            source.replace(
+                ANNOT,
+                '      <path d="M132,140 C316,140 316,140 500,140 L500,200 '
+                'C316,200 316,200 132,200 Z" fill="rgba(79,93,117,0.18)"/>\n'
+                '      <path d="M132,200 C316,200 316,200 500,200 L500,140 '
+                'C316,140 316,140 132,140 Z" fill="rgba(79,93,117,0.18)"/>\n' + ANNOT,
+                1,
+            ),
+            source, "upside down",
+            "an upside-down ribbon cancelling a real one",
+        )
+
         # 7. A path this checker cannot read must be reported, never skipped.
         case(
             failures, directory, "unreadable",
@@ -207,7 +250,10 @@ def main() -> int:
         #    counted in no node's balance — so it has to be reported, not skipped.
         case(
             failures, directory, "unattached",
-            source.replace('d="M132,224 C316,224', 'd="M172,224 C316,224'),
+            # Both source x's move (start and closing), so the outline stays
+            # self-consistent and only its attachment is wrong.
+            source.replace('d="M132,224 C316,224', 'd="M172,224 C316,224')
+                  .replace("316,304 132,304 Z", "316,304 172,304 Z"),
             source, "touches nothing",
             "a ribbon that leaves from no node bar",
         )

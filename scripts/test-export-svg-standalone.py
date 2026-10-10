@@ -21,30 +21,11 @@ EXPORT_MD = ROOT / "skills/diagram-design/references/export.md"
 ASSETS = ROOT / "skills/diagram-design/assets"
 
 # Shipped assets the helper refuses (loudly) because their markup is not
-# well-formed XML for reasons outside the CSS carry: the first `</svg>` match
-# stops at a nested icon <svg>, or a comment contains `--`. Keep this list
-# exact so a newly unexportable asset, or a fixed one, shows up here.
-KNOWN_UNEXPORTABLE = frozenset(
-    {
-        # nested icon <svg> truncates the first-</svg> extraction
-        "example-datalake.html",
-        "example-datalake-dark.html",
-        "example-datalake-full.html",
-        "example-high-level.html",
-        "example-high-level-dark.html",
-        "example-high-level-full.html",
-        "example-high-level-vertical.html",
-        "example-high-level-vertical-dark.html",
-        "example-high-level-vertical-full.html",
-        # `--` inside an XML comment
-        "example-slopegraph.html",
-        "example-slopegraph-dark.html",
-        "example-slopegraph-full.html",
-        "example-streamgraph.html",
-        "example-streamgraph-dark.html",
-        "example-streamgraph-full.html",
-    }
-)
+# well-formed XML for reasons outside the CSS carry. Nested icon <svg>s and
+# `--` inside comments are both handled now, so nothing is expected here. Keep
+# this set exact: test_refused_assets_match_known_unexportable_exactly fails
+# if a newly unexportable asset, or a fixed one, is not reflected here.
+KNOWN_UNEXPORTABLE: frozenset[str] = frozenset()
 
 # Motion files named in #202; they use valueless HTML attributes.
 MOTION_FILES = (
@@ -579,6 +560,97 @@ class ExportSvgStandaloneTests(unittest.TestCase):
                         rf"#{re.escape(slug)}-root[^{{}},]*\.{re.escape(cls)}(?![\w-])",
                         f"class {cls!r} is styled on the page but has no scoped rule",
                     )
+
+    def test_refused_assets_match_known_unexportable_exactly(self) -> None:
+        refused = set()
+        for path in sorted(ASSETS.glob("*.html")):
+            if path.name in {"index.html", "icons.html"}:
+                continue
+            try:
+                self.mod.export_svg_document(path.read_text(encoding="utf-8"), path)
+            except ValueError:
+                refused.add(path.name)
+        self.assertEqual(refused, set(KNOWN_UNEXPORTABLE))
+
+    def test_nested_icon_svg_does_not_truncate_extraction(self) -> None:
+        html = """<!DOCTYPE html><html><head><style>.n { fill: #f5f5f5; }</style></head><body>
+        <!-- <svg>commented out</svg> -->
+        <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img"
+             aria-labelledby="t d">
+          <title id="t">t</title><desc id="d">d</desc>
+          <svg x="10" y="10" width="24" height="24" viewBox="0 0 24 24"><path d="M0 0h24"/></svg>
+          <svg x="40" y="10" width="24" height="24" viewBox="0 0 24 24"/>
+          <rect class="n" width="10" height="10"/>
+          <text>after the icons</text>
+        </svg>
+        <svg viewBox="0 0 1 1"><text>second figure</text></svg>
+        </body></html>"""
+        extracted = self.mod.extract_first_svg(html)
+        self.assertTrue(extracted.startswith('<svg viewBox="0 0 100 100"'))
+        self.assertTrue(extracted.endswith("</svg>"))
+        self.assertIn("after the icons", extracted)
+        self.assertNotIn("second figure", extracted)
+        svg = self.mod.export_svg_document(html, Path("nested-icon.html"))
+        root = ET.fromstring(svg)
+        self.assertEqual(len(root.findall("{http://www.w3.org/2000/svg}svg")), 2)
+
+    def test_double_hyphen_in_comment_still_exports(self) -> None:
+        html = """<!DOCTYPE html><html><body>
+        <svg viewBox="0 0 10 10" xmlns="http://www.w3.org/2000/svg" role="img"
+             aria-labelledby="t d">
+          <title id="t">t</title><desc id="d">d</desc>
+          <!-- FOCAL -- the accent marks the editorially focal layer --->
+          <rect width="10" height="10"/>
+        </svg></body></html>"""
+        svg = self.mod.export_svg_document(html, Path("dash-comment.html"))
+        ET.fromstring(svg)
+        self.assertIn("FOCAL", svg)
+
+    def test_media_blocks_stay_conditional(self) -> None:
+        html = """<!DOCTYPE html><html><head><style>
+        .label { fill: #2d3142; }
+        @media print { .label { display: none; } body { margin: 0; } }
+        @media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
+        @keyframes pulse { 0% { opacity: 0; } 100% { opacity: 1; } }
+        .pulse { animation: pulse 1s infinite; }
+        </style></head><body>
+        <svg viewBox="0 0 10 10" xmlns="http://www.w3.org/2000/svg" role="img"
+             aria-labelledby="t d">
+          <title id="t">t</title><desc id="d">d</desc>
+          <text class="label pulse">x</text>
+        </svg></body></html>"""
+        svg = self.mod.export_svg_document(html, Path("media-rules.html"))
+        css = embedded_css(svg)
+        self.assertRegex(
+            css, r"@media print\s*\{\s*#media-rules-root \.label \{ display: none; \}\s*\}"
+        )
+        # The print-only rule must not also be emitted unconditionally.
+        self.assertEqual(css.count("display: none"), 1)
+        self.assertNotIn("margin: 0", css)
+        self.assertRegex(
+            css,
+            r"@media \(prefers-reduced-motion: reduce\)\s*\{\s*#media-rules-root \.pulse",
+        )
+        self.assertIn("@keyframes pulse", css)
+        self.assertNotRegex(css, r"#media-rules-root\s+\d+%")
+        self.assertIn("#media-rules-root .label { fill: #2d3142; }", css)
+
+    def test_rgba_attr_with_existing_opacity_multiplies(self) -> None:
+        html = """<!DOCTYPE html><html><body>
+        <svg viewBox="0 0 10 10" xmlns="http://www.w3.org/2000/svg" role="img"
+             aria-labelledby="t d">
+          <title id="t">t</title><desc id="d">d</desc>
+          <rect fill="rgba(45,49,66,0.5)" fill-opacity="0.5" width="10" height="10"/>
+          <rect stroke-opacity=".4" stroke="rgba(235, 108, 54, 0.5)" width="1" height="1"/>
+          <rect fill="rgba(45,49,66,0.12)" width="2" height="2"/>
+        </svg></body></html>"""
+        svg = self.mod.export_svg_document(html, Path("rgba-opacity.html"))
+        ET.fromstring(svg)
+        self.assertIn('fill="#2d3142" fill-opacity="0.25"', svg)
+        self.assertIn('stroke-opacity="0.2" stroke="#eb6c36"', svg)
+        self.assertIn('fill="#2d3142" fill-opacity="0.12"', svg)
+        self.assertEqual(svg.count("fill-opacity="), 2)
+        self.assertEqual(svg.count("stroke-opacity="), 1)
 
     def test_known_unexportable_assets_are_refused_loudly(self) -> None:
         for name in sorted(KNOWN_UNEXPORTABLE):

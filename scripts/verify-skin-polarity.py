@@ -72,10 +72,10 @@ Exit: 0 clean, 1 findings, 2 usage.
 from __future__ import annotations
 
 import argparse
-import html
 import math
 import re
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -99,17 +99,108 @@ HEX_RE = re.compile(
 )
 PAPER_VAR_RE = re.compile(r"--color-paper\s*:\s*(?P<value>[^;}]+)", re.IGNORECASE)
 
-# Copy a reader - or a screen reader - actually receives as a statement: rendered
-# SVG strings, the accessible description, and the editorial prose the full
-# variant wraps around the chart.
-COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
-# A complete inline comment must stay indivisible: its archived closing tags
-# cannot terminate the surrounding visible copy element.
-COPY_RE = re.compile(
-    r"<!--.*?-->|<(?P<tag>text|desc|p|h1|h2|h3|h4|li|figcaption)\b[^>]*>(?P<body>(?:<!--.*?-->|(?!<!--).)*?)</(?P=tag)>",
-    re.IGNORECASE | re.DOTALL,
-)
-TAG_RE = re.compile(r"<[^>]+>")
+# Copy a reader - or a screen reader - actually receives as a statement: every
+# text run outside <script>, <style> and <template>, in whatever element it sits
+# (a <div> legend, a <td>, a <small> note, an SVG <title> tooltip). A fixed list
+# of "copy" elements left every other wrapper silently exempt.
+# Text in these elements is never rendered or spoken as copy.
+NON_COPY_TAGS = {"script", "style", "template"}
+# Phrasing elements continue the surrounding run, so a <tspan> or <strong>
+# splitting a word or sentence still reads as one string. Every other element
+# starts a run of its own.
+INLINE_TAGS = {
+    "a", "abbr", "b", "bdi", "bdo", "cite", "code", "data", "dfn", "em", "i",
+    "kbd", "mark", "q", "s", "samp", "small", "span", "strong", "sub", "sup",
+    "time", "u", "var", "wbr", "font", "tspan", "textpath",
+}
+# Void elements never receive an end tag.
+VOID_TAGS = {
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+    "param", "source", "track", "wbr",
+}
+
+
+class CopyParser(HTMLParser):
+    """Collect (offset, text) runs of visible copy, one per block of text.
+
+    A run belongs to the innermost non-phrasing element around it and is cut
+    where a child element of that kind starts or ends, so text either side of a
+    nested block is never stitched into a claim the reader does not see.
+    Comments are dropped by the parser itself, so a commented-out legend is not
+    copy and a comment inside a word does not split it.
+    """
+
+    def __init__(self, source):
+        super().__init__(convert_charrefs=True)
+        self.line_starts = [0]
+        for match in re.finditer("\n", source):
+            self.line_starts.append(match.end())
+        self.runs = []
+        self.stack = []  # [tag, offset, parts]
+        self.skip = 0
+        self.feed(source)
+        self.close()
+        while self.stack:
+            self._flush(self.stack.pop())
+
+    def _offset(self):
+        line, column = self.getpos()
+        return self.line_starts[line - 1] + column
+
+    def _flush(self, frame):
+        text = " ".join("".join(frame[2]).split())
+        if text:
+            self.runs.append((frame[1], text))
+        frame[2] = []
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag in NON_COPY_TAGS:
+            self.skip += 1
+            return
+        if tag == "br":
+            if self.stack:
+                self.stack[-1][2].append(" ")
+            return
+        if tag in INLINE_TAGS:
+            return
+        if self.stack:
+            self._flush(self.stack[-1])
+        if tag not in VOID_TAGS:
+            self.stack.append([tag, self._offset(), []])
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag.lower() not in VOID_TAGS:
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag in NON_COPY_TAGS:
+            self.skip = max(0, self.skip - 1)
+            return
+        if tag in INLINE_TAGS or tag in VOID_TAGS:
+            return
+        for index in range(len(self.stack) - 1, -1, -1):
+            if self.stack[index][0] == tag:
+                while len(self.stack) > index:
+                    self._flush(self.stack.pop())
+                if self.stack:
+                    self.stack[-1][1] = self._offset()
+                return
+
+    def handle_data(self, data):
+        if self.skip:
+            return
+        if not self.stack:
+            self.stack.append(["#document", self._offset(), []])
+        self.stack[-1][2].append(data)
+
+
+def copy_runs(source):
+    """(offset, plain text) for every run of visible copy in the file."""
+    return CopyParser(source).runs
+
 
 LUMINANCE = "luminance"
 CONTRAST = "contrast"
@@ -233,16 +324,6 @@ class Claim:
 
 def line_of(source, offset):
     return source.count("\n", 0, offset) + 1
-
-
-def plain(body):
-    """Text content of a copy element, child tags stripped and entities resolved.
-
-    Both steps matter: a `<tspan>` splitting a word, or an escaped character
-    inside it, would otherwise hide the claim from a substring search while a
-    reader still receives the whole sentence.
-    """
-    return " ".join(html.unescape(TAG_RE.sub("", COMMENT_RE.sub("", body))).split())
 
 
 def excerpt(text):
@@ -514,12 +595,7 @@ def classify_magnitude(word):
 
 def parse_claims(source):
     claims = []
-    for match in COPY_RE.finditer(source):
-        if match.group("body") is None:  # An HTML comment is not a copy element.
-            continue
-        copy = plain(match.group("body"))
-        if not copy:
-            continue
+    for offset, copy in copy_runs(source):
         seen = set()
         for pattern in (CLAIM_RE, MIRROR_RE):
             for hit in pattern.finditer(copy):
@@ -537,7 +613,7 @@ def parse_claims(source):
                 claims.append(
                     Claim(
                         axis, tone_dir, magnitude, hit.group(0), copy,
-                        match.start(), hit.span(),
+                        offset, hit.span(),
                     )
                 )
     return claims
@@ -554,18 +630,13 @@ def find_unparsed(source, claims):
         bound.setdefault(claim.offset, []).append(claim.span)
 
     unparsed = []
-    for match in COPY_RE.finditer(source):
-        if match.group("body") is None:  # An HTML comment is not a copy element.
-            continue
-        copy = plain(match.group("body"))
-        if not copy:
-            continue
-        spans = bound.get(match.start(), [])
+    for offset, copy in copy_runs(source):
+        spans = bound.get(offset, [])
         for hit in LOOSE_CLAIM_RE.finditer(copy):
             start, end = hit.span()
             if any(start < known_end and known_start < end for known_start, known_end in spans):
                 continue
-            unparsed.append((hit.group(0), copy, match.start()))
+            unparsed.append((hit.group(0), copy, offset))
     return unparsed
 
 

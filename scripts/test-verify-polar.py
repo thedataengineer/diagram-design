@@ -37,6 +37,13 @@ def category(index: int, value: int, endpoint: tuple[float, float] | None) -> st
     )
 
 
+# Ring scale labels on the first axis, one per ring at 0.2x..1.0x of max (100),
+# plus the optional centre zero.
+RING_LABELS = "".join(
+    f'<text x="96" y="{100 - r + 3}">{r}</text>' for r in (20, 40, 60, 80, 100)
+) + '<text x="104" y="103">0</text>'
+
+
 def document(categories: str, extra_svg: str = "") -> str:
     return (
         '<!DOCTYPE html><html><body>'
@@ -63,6 +70,7 @@ def document(categories: str, extra_svg: str = "") -> str:
         'x2="100" y2="200" stroke-width="0.8"/>'
         '<line data-polar-spoke="" data-polar-index="3" x1="100" y1="100" '
         'x2="0" y2="100" stroke-width="0.8"/>'
+        + RING_LABELS +
         f'{extra_svg}{categories}</svg></body></html>'
     )
 
@@ -78,6 +86,32 @@ VALID = document(
 def main() -> int:
     module = load_verifier()
     cases = [
+        (
+            "doubled ring labels",
+            VALID.replace('>100</text>', '>200</text>', 1)
+            .replace('>80</text>', '>160</text>', 1)
+            .replace('>60</text>', '>120</text>', 1)
+            .replace('>40</text>', '>80</text>', 1)
+            .replace('>20</text>', '>40</text>', 1),
+            "ring label",
+        ),
+        (
+            "missing ring label",
+            VALID.replace('<text x="96" y="43">60</text>', ''),
+            "ring label",
+        ),
+        (
+            "duplicate ring label",
+            VALID.replace('<text x="96" y="43">60</text>',
+                          '<text x="96" y="43">60</text><text x="92" y="43">60</text>'),
+            "ring label",
+        ),
+        (
+            "hidden ring label",
+            VALID.replace('<text x="96" y="43">60</text>',
+                          '<text x="96" y="43" visibility="hidden">60</text>'),
+            "ring label",
+        ),
         (
             "25 percent hub",
             VALID.replace('data-polar-inner-radius="0"', 'data-polar-inner-radius="25"'),
@@ -597,6 +631,28 @@ def main() -> int:
                 failures.append(
                     f"{label}: expected a finding containing {expected!r}, got {findings}"
                 )
+
+        # The shipped example with its ring scale doubled to 40..200 while
+        # data-polar-max stays 100: every ray now reads at half its value.
+        shipped = (ROOT / "skills/diagram-design/assets/example-polar.html").read_text(encoding="utf-8")
+        doubled = shipped
+        for old_label, new_label in (("100", "200"), ("80", "160"), ("60", "120"),
+                                     ("40", "80"), ("20", "40")):
+            anchor = f'text-anchor="end">{old_label}</text>'
+            doubled = doubled.replace(anchor, f'text-anchor="end">{new_label}</text>', 1)
+        if doubled == shipped:
+            failures.append("shipped doubled ring labels: anchor moved, fixture not built")
+        else:
+            path = root / "shipped-doubled.html"
+            path.write_text(doubled, encoding="utf-8")
+            findings = module.check(path)
+            if not any("ring label" in finding for finding in findings):
+                failures.append(f"shipped doubled ring labels: expected a ring label finding, got {findings}")
+            shipped_path = root / "shipped.html"
+            shipped_path.write_text(shipped, encoding="utf-8")
+            findings = module.check(shipped_path)
+            if findings:
+                failures.append(f"shipped example: expected no findings, got {findings}")
 
         light = root / "light.html"
         dark = root / "dark.html"

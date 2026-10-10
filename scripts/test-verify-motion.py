@@ -186,6 +186,23 @@ def main() -> int:
             source.replace('data-motion-item data-step="1"', 'data-motion-item data-step="1" style="opacity:0"', 1),
             "fallback must be visible",
         )
+        item_one = 'data-motion-item data-step="1"'
+        for name, attribute in (
+            ("hidden-fallback-opacity-attribute", 'opacity="0"'),
+            ("hidden-fallback-opacity-attribute-decimal", 'opacity="0.0"'),
+            ("hidden-fallback-visibility-attribute", 'visibility="hidden"'),
+            ("hidden-fallback-display-attribute", 'display="none"'),
+            ("hidden-fallback-opacity-important", 'style="opacity: 0 !important"'),
+            ("hidden-fallback-opacity-zero-point", 'style="opacity:.0"'),
+            ("hidden-fallback-opacity-percent", 'style="opacity: 0%"'),
+        ):
+            check(name, source.replace(item_one, f"{item_one} {attribute}", 1), "fallback must be visible")
+        for name, attribute in (
+            ("dimmed-fallback-inline-opacity", 'style="opacity: 0.6"'),
+            ("dimmed-fallback-opacity-attribute", 'opacity="0.5"'),
+            ("dimmed-fallback-fill-opacity", 'style="fill-opacity:0"'),
+        ):
+            check(name, source.replace(item_one, f"{item_one} {attribute}", 1), None)
         check(
             "decorative-focus",
             source.replace('data-motion-decorative aria-hidden="true" focusable="false"', 'data-motion-decorative aria-hidden="false" focusable="true"', 1),
@@ -350,6 +367,24 @@ def main() -> int:
             source.replace(
                 ".motion-ready [data-motion-item] {\n      opacity: .12;",
                 ".motion-ready [data-motion-item], [data-motion-item] {\n      opacity: 0;",
+                1,
+            ),
+            "unscoped data-motion-item hiding",
+        )
+        check(
+            "unscoped-dimmed-class",
+            source.replace(
+                "</style>",
+                "  [data-motion-item].muted { opacity: 0.5; }\n  </style>",
+                1,
+            ),
+            None,
+        )
+        check(
+            "unscoped-opacity-zero-decimal",
+            source.replace(
+                "</style>",
+                "  [data-motion-item] { opacity: 0.00; }\n  </style>",
                 1,
             ),
             "unscoped data-motion-item hiding",

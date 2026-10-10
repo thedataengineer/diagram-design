@@ -134,6 +134,18 @@ def main() -> int:
         panel_node + '<g transform="translate(-200 0)">' + translated_mask + '</g>'), 0)
     check("translated contained badge remains legal", document(
         '<g transform="translate(300 0)">' + badge + node + '</g>'), 0)
+    # SVG defaults a missing x or y to 0, so a node positioned only by its
+    # group's translate still clips a mask; dropping it would pass the defect.
+    check("node with implicit x/y under a translate clips a mask", document(
+        '<rect x="240" y="80" width="48" height="12" rx="2" fill="#f5f5f5"/>'
+        '<g transform="translate(100,60)"><rect width="160" height="64" fill="#eee"/></g>'), 1)
+    check("mask with implicit x/y under a translate is clipped", document(
+        '<g transform="translate(240,80)"><rect width="48" height="12" fill="#fff"/></g>'
+        + node), 1)
+    # Width and height have no usable default; such rects stay ignored.
+    check("rect without width is not a node", document(
+        '<rect x="240" y="80" width="48" height="12" fill="#fff"/>'
+        '<rect x="100" y="60" height="64" fill="#eee"/>'), 0)
 
     # A long mono plate (128px, as shipped in example-sequence-oauth.html) or a
     # wide CJK label plate must be recognized as a mask and checked like any other.
@@ -292,6 +304,18 @@ def main() -> int:
         "short fork from a shared start with no node",
         document(f'<path d="M 10,50 H 16 V 10" {arrow}/><path d="M 10,50 H 16 V 90" {arrow}/>'),
         "runs on top of",
+    )
+    # Attribute quoting is the author's choice; single-quoted and unquoted
+    # attributes must be read like double-quoted ones.
+    check_message(
+        "single-quoted diagonal arrow is read",
+        document("<path d='M 0 0 L 50 50' fill='none' stroke='#4f5d75' marker-end='url(#a)'/>"),
+        "diagonal",
+    )
+    check_message(
+        "unquoted diagonal line arrow is read",
+        document("<line x1=10 y1=10 x2=60 y2=40 stroke=#4f5d75 marker-end=url(#a) />"),
+        "diagonal",
     )
     # Coordinates under a rotate are not canvas space; skip rather than misjudge.
     check(

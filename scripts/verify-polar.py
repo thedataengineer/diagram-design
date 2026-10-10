@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Verify the machine-readable contract for quantitative polar diagrams."""
+"""Verify the machine-readable contract for quantitative polar diagrams.
+
+Beyond the geometry of rings, spokes, rays and markers, the ring SCALE LABELS
+are bound to `data-polar-max`: every purely numeric chart-level text within
+the outer ring is assigned to the ring (or centre) nearest it and must read
+`max * r / R` to its printed precision, and each of the five rings must carry
+exactly one visible label. A relabelled scale otherwise makes every ray read
+at the wrong value while all geometry stays correct.
+"""
 
 from __future__ import annotations
 
@@ -69,6 +77,7 @@ class Chart:
     tag: str
     backgrounds: list[dict[str, str]]
     rings: list[dict[str, str]]
+    texts: list[ValueLabel]
     spokes: list[dict[str, str]]
     rules: list[dict[str, str]]
     unsupported_elements: list[str]
@@ -247,6 +256,7 @@ class PolarParser(HTMLParser):
                 tag=tag,
                 backgrounds=[],
                 rings=[],
+                texts=[],
                 spokes=[],
                 rules=[],
                 unsupported_elements=[],
@@ -303,6 +313,20 @@ class PolarParser(HTMLParser):
                 self._chart.categories.append(category)
                 self._category_stack.append((depth, category))
             current = self._current_category()
+            if current is None and tag == "text":
+                # Chart-level text: the ring scale labels live here, alongside
+                # titles and notes. Captured so the scale can be bound to the
+                # declared data-polar-max rather than trusted.
+                chart_text = ValueLabel(
+                    attrs=data,
+                    text="",
+                    hidden=(
+                        visibility_state[0]
+                        or visibility_state[1] in {"hidden", "collapse"}
+                    ),
+                )
+                self._chart.texts.append(chart_text)
+                self._value_label_stack.append((depth, chart_text))
             if current is not None:
                 if tag == "text" and "data-polar-value-label" in data:
                     label = ValueLabel(
@@ -439,6 +463,71 @@ def _visibility_state(
     elif own_visibility == "initial":
         visibility = "visible"
     return suppressed, visibility
+
+
+SCALE_NUMBER = re.compile(r"^-?\d{1,3}(?:,\d{3})*(?:\.\d+)?$|^-?\d+(?:\.\d+)?$")
+
+
+def _ring_label_findings(
+    chart: Chart,
+    cx: object,
+    cy: object,
+    radius: object,
+    maximum: object,
+) -> list[str]:
+    """Bind every ring scale label to data-polar-max.
+
+    A ring label is a purely numeric chart-level text (outside any category
+    group) within half a ring spacing of the outer ring. Each is bound to the
+    ring - or the centre - nearest its anchor point, and must read
+    `max * ring_radius / R`, to the precision it is printed at. Every one of
+    the five rings must carry exactly one visible label. Without this binding
+    the scale can be relabelled (e.g. 40..200 against a max of 100) and every
+    ray reads at the wrong value while all geometry stays correct.
+    """
+    if not all(isinstance(v, float) for v in (cx, cy, radius, maximum)):
+        return []
+    assert isinstance(cx, float) and isinstance(cy, float)
+    assert isinstance(radius, float) and isinstance(maximum, float)
+    if radius <= 0 or maximum <= 0:
+        return []
+    findings: list[str] = []
+    step = radius / 5
+    stops = [0.0] + [radius * k / 5 for k in range(1, 6)]
+    bound: dict[int, list[float]] = {k: [] for k in range(1, 6)}
+    for text in chart.texts:
+        raw = text.text.strip()
+        if not SCALE_NUMBER.match(raw):
+            continue
+        point = _point(text.attrs, "x", "y")
+        if point is None:
+            continue
+        distance = hypot(point[0] - cx, point[1] - cy)
+        if distance > radius + step / 2:
+            continue
+        nearest = min(range(len(stops)), key=lambda k: abs(stops[k] - distance))
+        value = float(raw.replace(",", ""))
+        expected = maximum * stops[nearest] / radius
+        decimals = len(raw.split(".")[1]) if "." in raw else 0
+        allowance = 0.5 * 10 ** -decimals + 1e-9
+        where = "centre" if nearest == 0 else f"{nearest * 20}% ring"
+        if text.hidden:
+            findings.append(f"ring label {raw!r} at the {where} is explicitly hidden")
+            continue
+        if abs(value - expected) > allowance:
+            findings.append(
+                f"ring label {raw!r} sits on the {where} but that ring is "
+                f"{expected:g} of data-polar-max {maximum:g}"
+            )
+        if nearest:
+            bound[nearest].append(value)
+    for k, values in bound.items():
+        if len(values) != 1:
+            findings.append(
+                f"ring label count for the {k * 20}% ring is {len(values)}, expected one "
+                f"(ring labels run 0.2x..1.0x of max)"
+            )
+    return findings
 
 
 def check(path: Path) -> list[str]:
@@ -625,6 +714,8 @@ def check(path: Path) -> list[str]:
             for observed, expected in zip(observed_radii, expected_radii)
         ):
             findings.append("ring radii must cover 20% through 100% intervals")
+
+    findings.extend(_ring_label_findings(chart, cx, cy, radius, maximum))
 
     count = len(chart.categories)
     if not 4 <= count <= 8:

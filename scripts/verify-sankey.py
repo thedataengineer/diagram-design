@@ -15,7 +15,10 @@ Five checks, in the order a defect is likely to reach review:
    eye has no reference width to compare against, so 5,200 minutes arriving and
    4,800 departing looks exactly like 5,200 arriving and 5,200 departing. Volume
    that genuinely leaves the story must be drawn as a named node in the final
-   column, not allowed to evaporate mid-diagram.
+   column, not allowed to evaporate mid-diagram. Sums alone are not enough:
+   the ribbon ends on each side of a node must also own DISJOINT slices of it
+   (shared edges allowed), because two bands stacked on one attach point still
+   add up to the bar's height while leaving part of it carrying nothing.
 
 2. COLUMN TOTALS - every stage must carry the same total. This is conservation
    read the other way, and it is what catches a whole node being forgotten
@@ -53,7 +56,11 @@ nothing.
 
 Guards sit under all of that, because the worst outcome for a checker is not a
 missed defect but a clean exit having read nothing. A <path> that does not parse
-as a ribbon is reported rather than skipped, and so is a ribbon end that lands on
+as a ribbon is reported rather than skipped, and so is a ribbon whose outline is
+not self-consistent: every x in it (end cap, closing point) must be one of its
+two end x's, and its top edge must sit above its bottom edge at both ends - an
+upside-down ribbon has negative height and would cancel a real band in every
+sum. Likewise reported: a ribbon end that lands on
 no node bar, a file whose node bars fall outside the size window, and a figure
 with bars but no ribbons - each would otherwise quietly remove a shape from the
 sums, or leave every check to pass vacuously. `--all` additionally refuses to run
@@ -324,7 +331,8 @@ def plain(body: str) -> str:
 
 
 class Bar:
-    __slots__ = ("x", "y", "w", "h", "offset", "value", "label", "values", "inflow", "outflow")
+    __slots__ = ("x", "y", "w", "h", "offset", "value", "label", "values", "inflow", "outflow",
+                 "ins", "outs")
 
     def __init__(self, x: float, y: float, w: float, h: float, offset: int) -> None:
         self.x, self.y, self.w, self.h, self.offset = x, y, w, h, offset
@@ -333,6 +341,9 @@ class Bar:
         self.values: list[tuple[float, str]] = []
         self.inflow = 0.0
         self.outflow = 0.0
+        # (top, bottom, offset) of every ribbon end attached on each side.
+        self.ins: list[tuple[float, float, int]] = []
+        self.outs: list[tuple[float, float, int]] = []
 
     @property
     def bottom(self) -> float:
@@ -626,7 +637,35 @@ def parse_ribbons(source: str, findings: list[str], name: str) -> list[Ribbon]:
                     f"carries its volume in its fill"
                 )
                 continue
-            ribbons.append(Ribbon(nums, m.start()))
+            # Every x in the outline must be one of the two end x's. The sums
+            # below read only x0 and x1, so an end-cap or closing x pointing
+            # anywhere else would redraw the band across another column while
+            # every number checked stayed correct.
+            where = f"{name}:{line_of(source, m.start())}"
+            for index, expected, role in ((8, nums[6], "end-cap x (L)"),
+                                          (14, nums[0], "closing x")):
+                if abs(nums[index] - expected) > CONTROL_TOL:
+                    findings.append(
+                        f"{where}: ribbon {role} is {nums[index]:g} but the edge it "
+                        f"closes ends at x={expected:g} — the band is drawn across "
+                        f"ground its attach points do not claim, so it must not ship"
+                    )
+                    break
+            else:
+                ribbon = Ribbon(nums, m.start())
+                # A ribbon whose top edge sits below its bottom edge has a
+                # NEGATIVE height, and a negative height in a sum cancels a real
+                # band of the same size. Report it and keep it out of the sums.
+                if ribbon.source_h <= 0 or ribbon.target_h <= 0:
+                    findings.append(
+                        f"{where}: ribbon is drawn upside down (source "
+                        f"{ribbon.y0t:g}→{ribbon.y0b:g}, target "
+                        f"{ribbon.y1t:g}→{ribbon.y1b:g}) — its top edge must sit "
+                        f"above its bottom edge, or it counts as negative volume "
+                        f"and cancels a real band in every conservation sum"
+                    )
+                else:
+                    ribbons.append(ribbon)
             continue
         # The reference permits exactly one non-ribbon path: a DASHED, HAIRLINE,
         # unfilled stroke for a relationship that is not a volume. Match that
@@ -1110,9 +1149,11 @@ def check(path: Path) -> list[str]:
         for bar in bars:
             if abs(r.x0 - bar.right) <= EDGE_EPS and contained(r.y0t, r.y0b, bar):
                 bar.outflow += r.source_h
+                bar.outs.append((r.y0t, r.y0b, r.offset))
                 ends["leaves"] = True
             if abs(r.x1 - bar.x) <= EDGE_EPS and contained(r.y1t, r.y1b, bar):
                 bar.inflow += r.target_h
+                bar.ins.append((r.y1t, r.y1b, r.offset))
                 ends["arrives"] = True
         loose = [side for side, hit in ends.items() if not hit]
         if loose:
@@ -1122,6 +1163,25 @@ def check(path: Path) -> list[str]:
                 f"node bar — a ribbon that touches nothing is counted in no node's "
                 f"balance, so it must not ship unattached"
             )
+
+    # 1a. Each ribbon end owns its own slice of the node. Sums alone cannot see
+    #     two ribbons stacked on the same attach point: the total still matches
+    #     the bar, but one band is painted twice and part of the bar carries
+    #     nothing. Attach intervals on each side must be disjoint (shared edges
+    #     allowed); with the sum check below that also means they tile the bar.
+    for bar in bars:
+        who = bar.label or f"{bar.w:g}x{bar.h:g} at {bar.x:g},{bar.y:g}"
+        for side, spans in (("incoming", bar.ins), ("outgoing", bar.outs)):
+            ordered = sorted(spans)
+            for (top_a, bottom_a, _), (top_b, bottom_b, off_b) in zip(ordered, ordered[1:]):
+                if top_b < bottom_a - NODE_TOL:
+                    findings.append(
+                        f"{name}:{line_of(source, off_b)}: {side} ribbons at node "
+                        f"{who!r} overlap at the same attach point — {top_a:g}-"
+                        f"{bottom_a:g} and {top_b:g}-{bottom_b:g} share "
+                        f"{min(bottom_a, bottom_b) - top_b:.2f}px. Every flow gets "
+                        f"its own offset range within the node's height"
+                    )
 
     # 1. Conservation, read at each node.
     for bar in bars:

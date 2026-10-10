@@ -31,7 +31,87 @@ RGBA_RE = re.compile(
     r"rgba\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*([^)]+)\)",
     re.IGNORECASE,
 )
-BLACK_RGB_RE = re.compile(r"rgb\(\s*0\s*,\s*0\s*,\s*0\s*\)", re.IGNORECASE)
+# Any CSS color function. Arguments are parsed by parse_color_function(); a
+# value that cannot be resolved to RGB (for example one that uses var()) is
+# left to the other checks rather than guessed at.
+COLOR_FUNC_RE = re.compile(r"(?<![\w-])(rgba?|hsla?)\(([^()]*)\)", re.IGNORECASE)
+# Hex lookalikes that are really fragment references: url(#fade), href="#bad".
+FRAGMENT_PREFIX_RE = re.compile(
+    r"(?:url\(\s*['\"]?\s*|(?<![\w-])(?:xlink:)?href\s*=\s*['\"]\s*)$",
+    re.IGNORECASE,
+)
+STYLE_ATTR_RE = re.compile(
+    r"(?<![\w:-])style\s*=\s*(['\"])(?P<value>.*?)\1", re.IGNORECASE | re.DOTALL
+)
+STYLE_BLOCK_RE = re.compile(
+    r"<style\b[^>]*>(?P<value>.*?)</style\s*>", re.IGNORECASE | re.DOTALL
+)
+COLOR_ATTR_RE = re.compile(
+    r"(?<![\w:-])(?:fill|stroke|color|stop-color|flood-color|lighting-color|bgcolor)"
+    r"\s*=\s*(['\"])(?P<value>.*?)\1",
+    re.IGNORECASE | re.DOTALL,
+)
+CSS_COLOR_DECL_RE = re.compile(
+    r"(?<![\w-])(?:--[\w-]+|color|fill|stroke|stop-color|flood-color|lighting-color"
+    r"|accent-color|caret-color|background(?:-color)?|border(?:-[a-z-]+)?"
+    r"|outline(?:-color)?|text-decoration(?:-color)?|text-emphasis(?:-color)?"
+    r"|column-rule(?:-color)?|box-shadow|text-shadow|filter)"
+    r"\s*:\s*(?P<value>[^;{}<]+)",
+    re.IGNORECASE,
+)
+CSS_IDENT_RE = re.compile(r"(?<![\w#.-])[a-zA-Z]+(?![\w(-])")
+CSS_QUOTED_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+# CSS Color Module Level 4 named colors (``transparent`` and ``currentColor``
+# are deliberately absent: they never introduce an off-palette color).
+CSS_NAMED_COLORS = {
+    name: tuple(int(value[offset : offset + 2], 16) for offset in (0, 2, 4))
+    for name, value in (
+        item.split(":")
+        for item in (
+            "aliceblue:f0f8ff antiquewhite:faebd7 aqua:00ffff aquamarine:7fffd4 "
+            "azure:f0ffff beige:f5f5dc bisque:ffe4c4 black:000000 "
+            "blanchedalmond:ffebcd blue:0000ff blueviolet:8a2be2 brown:a52a2a "
+            "burlywood:deb887 cadetblue:5f9ea0 chartreuse:7fff00 chocolate:d2691e "
+            "coral:ff7f50 cornflowerblue:6495ed cornsilk:fff8dc crimson:dc143c "
+            "cyan:00ffff darkblue:00008b darkcyan:008b8b darkgoldenrod:b8860b "
+            "darkgray:a9a9a9 darkgreen:006400 darkgrey:a9a9a9 darkkhaki:bdb76b "
+            "darkmagenta:8b008b darkolivegreen:556b2f darkorange:ff8c00 "
+            "darkorchid:9932cc darkred:8b0000 darksalmon:e9967a darkseagreen:8fbc8f "
+            "darkslateblue:483d8b darkslategray:2f4f4f darkslategrey:2f4f4f "
+            "darkturquoise:00ced1 darkviolet:9400d3 deeppink:ff1493 "
+            "deepskyblue:00bfff dimgray:696969 dimgrey:696969 dodgerblue:1e90ff "
+            "firebrick:b22222 floralwhite:fffaf0 forestgreen:228b22 fuchsia:ff00ff "
+            "gainsboro:dcdcdc ghostwhite:f8f8ff gold:ffd700 goldenrod:daa520 "
+            "gray:808080 green:008000 greenyellow:adff2f grey:808080 honeydew:f0fff0 "
+            "hotpink:ff69b4 indianred:cd5c5c indigo:4b0082 ivory:fffff0 khaki:f0e68c "
+            "lavender:e6e6fa lavenderblush:fff0f5 lawngreen:7cfc00 "
+            "lemonchiffon:fffacd lightblue:add8e6 lightcoral:f08080 lightcyan:e0ffff "
+            "lightgoldenrodyellow:fafad2 lightgray:d3d3d3 lightgreen:90ee90 "
+            "lightgrey:d3d3d3 lightpink:ffb6c1 lightsalmon:ffa07a "
+            "lightseagreen:20b2aa lightskyblue:87cefa lightslategray:778899 "
+            "lightslategrey:778899 lightsteelblue:b0c4de lightyellow:ffffe0 "
+            "lime:00ff00 limegreen:32cd32 linen:faf0e6 magenta:ff00ff maroon:800000 "
+            "mediumaquamarine:66cdaa mediumblue:0000cd mediumorchid:ba55d3 "
+            "mediumpurple:9370db mediumseagreen:3cb371 mediumslateblue:7b68ee "
+            "mediumspringgreen:00fa9a mediumturquoise:48d1cc "
+            "mediumvioletred:c71585 midnightblue:191970 mintcream:f5fffa "
+            "mistyrose:ffe4e1 moccasin:ffe4b5 navajowhite:ffdead navy:000080 "
+            "oldlace:fdf5e6 olive:808000 olivedrab:6b8e23 orange:ffa500 "
+            "orangered:ff4500 orchid:da70d6 palegoldenrod:eee8aa palegreen:98fb98 "
+            "paleturquoise:afeeee palevioletred:db7093 papayawhip:ffefd5 "
+            "peachpuff:ffdab9 peru:cd853f pink:ffc0cb plum:dda0dd powderblue:b0e0e6 "
+            "purple:800080 rebeccapurple:663399 red:ff0000 rosybrown:bc8f8f "
+            "royalblue:4169e1 saddlebrown:8b4513 salmon:fa8072 sandybrown:f4a460 "
+            "seagreen:2e8b57 seashell:fff5ee sienna:a0522d silver:c0c0c0 "
+            "skyblue:87ceeb slateblue:6a5acd slategray:708090 slategrey:708090 "
+            "snow:fffafa springgreen:00ff7f steelblue:4682b4 tan:d2b48c teal:008080 "
+            "thistle:d8bfd8 tomato:ff6347 turquoise:40e0d0 violet:ee82ee "
+            "wheat:f5deb3 white:ffffff whitesmoke:f5f5f5 yellow:ffff00 "
+            "yellowgreen:9acd32"
+        ).split()
+    )
+}
 SCRIPT_OPEN_RE = re.compile(r"<script\b(?P<attrs>[^>]*)>", re.IGNORECASE | re.DOTALL)
 SCRIPT_BLOCK_RE = re.compile(
     r"<script\b(?P<attrs>[^>]*)>(?P<body>.*?)</script\s*>",
@@ -47,7 +127,7 @@ URL_ANY_RE = re.compile(r"url\(\s*([^)]+?)\s*\)", re.IGNORECASE)
 LINK_RE = re.compile(r"<link\b[^>]*>", re.IGNORECASE | re.DOTALL)
 HREF_RE = re.compile(r"\bhref\s*=\s*(['\"])(.*?)\1", re.IGNORECASE | re.DOTALL)
 REL_RE = re.compile(r"\brel\s*=\s*(['\"])(.*?)\1", re.IGNORECASE | re.DOTALL)
-FONT_CSS_RE = re.compile(r"font-family\s*:\s*([^;}]+)", re.IGNORECASE)
+FONT_CSS_RE = re.compile(r"font-family\s*:\s*([^;}<]+)", re.IGNORECASE)
 FONT_ATTR_RE = re.compile(
     r"\bfont-family\s*=\s*(['\"])(.*?)\1", re.IGNORECASE | re.DOTALL
 )
@@ -139,7 +219,19 @@ class ResourceParser(HTMLParser):
         "video": ("src", "poster"),
         "audio": ("src",),
         "source": ("src", "srcset"),
+        "track": ("src",),
+        "input": ("src",),
+        "frame": ("src",),
+        "html": ("manifest",),
+        "body": ("background",),
+        "table": ("background",),
+        "td": ("background",),
+        "th": ("background",),
     }
+    # In SVG, href / xlink:href on any element other than a hyperlink can make
+    # the renderer fetch: feImage, script, pattern/gradient/filter templates,
+    # textPath, mpath, tref, animate*, cursor, color-profile ...
+    NAVIGATION_ONLY = {"a", "area"}
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -169,7 +261,14 @@ class ResourceParser(HTMLParser):
                 or compact.startswith("data:text/html")
             ):
                 self.executable.append((line, tag, name))
-        for attr in self.RESOURCE_ATTRS.get(tag, ()):
+        attrs_to_check = list(self.RESOURCE_ATTRS.get(tag, ()))
+        if tag not in self.NAVIGATION_ONLY:
+            attrs_to_check.extend(
+                attr
+                for attr in ("href", "xlink:href")
+                if attr in data and attr not in attrs_to_check
+            )
+        for attr in attrs_to_check:
             value = data.get(attr, "").strip()
             candidates = (
                 [item.strip().split()[0] for item in value.split(",") if item.strip()]
@@ -556,6 +655,88 @@ def named_families(value, allowed_fonts):
     return families
 
 
+def _css_number(token, percent_scale):
+    """Parse a CSS <number> or <percentage>; percentages map onto *percent_scale*."""
+    token = token.strip().casefold()
+    if token == "none":
+        return 0.0
+    if token.endswith("%"):
+        return float(token[:-1]) * percent_scale / 100.0
+    return float(token)
+
+
+def _css_hue(token):
+    token = token.strip().casefold()
+    for unit, scale in (("deg", 1.0), ("grad", 0.9), ("rad", 180.0 / math.pi), ("turn", 360.0)):
+        if token.endswith(unit):
+            return float(token[: -len(unit)]) * scale
+    if token == "none":
+        return 0.0
+    return float(token)
+
+
+def parse_color_function(name, arguments):
+    """Return ``((r, g, b), alpha)`` for an rgb()/rgba()/hsl()/hsla() call.
+
+    Accepts the legacy comma syntax and the modern space/slash syntax, with
+    numbers or percentages. Returns ``None`` for anything not statically
+    resolvable (var(), calc(), relative colors, malformed input).
+    """
+    arguments = arguments.strip()
+    if not arguments or "var" in arguments.casefold() or "from" in arguments.casefold():
+        return None
+    try:
+        if "," in arguments:
+            parts = [part.strip() for part in arguments.split(",")]
+            if "/" in arguments or len(parts) not in (3, 4):
+                return None
+            channels, alpha_token = parts[:3], (parts[3] if len(parts) == 4 else None)
+        else:
+            color_part, slash, alpha_part = arguments.partition("/")
+            channels = color_part.split()
+            alpha_token = alpha_part.strip() if slash else None
+            if len(channels) != 3 or (slash and not alpha_token):
+                return None
+        alpha = 1.0 if alpha_token is None else _css_number(alpha_token, 1.0)
+        if name.casefold().startswith("rgb"):
+            rgb = [_css_number(channel, 255.0) for channel in channels]
+        else:
+            hue = _css_hue(channels[0]) % 360.0
+            saturation = min(max(_css_number(channels[1], 100.0), 0.0), 100.0) / 100.0
+            lightness = min(max(_css_number(channels[2], 100.0), 0.0), 100.0) / 100.0
+
+            def channel(n):
+                k = (n + hue / 30.0) % 12
+                a = saturation * min(lightness, 1 - lightness)
+                return (lightness - a * max(-1.0, min(k - 3, 9 - k, 1.0))) * 255.0
+
+            rgb = [channel(0), channel(8), channel(4)]
+    except ValueError:
+        return None
+    if not all(math.isfinite(value) for value in rgb + [alpha]):
+        return None
+    clamped = tuple(int(round(min(max(value, 0.0), 255.0))) for value in rgb)
+    return clamped, min(max(alpha, 0.0), 1.0)
+
+
+def masked(text, spans):
+    """Blank *spans* of *text* with spaces, keeping offsets and newlines intact."""
+    characters = list(text)
+    for start, end in spans:
+        for index in range(start, end):
+            if characters[index] != "\n":
+                characters[index] = " "
+    return "".join(characters)
+
+
+def css_sources(text):
+    """Yield ``(offset, css)`` for every <style> body and style="" attribute value."""
+    for match in STYLE_BLOCK_RE.finditer(text):
+        yield match.start("value"), match.group("value")
+    for match in STYLE_ATTR_RE.finditer(text):
+        yield match.start("value"), match.group("value")
+
+
 def lint_text(
     text, colors, rgb_triplets, expected_slug, allow_template_placeholders=False
 ):
@@ -591,6 +772,8 @@ def lint_text(
         findings.append((line_number(text, offset), offset, category, message))
 
     for match in HEX_RE.finditer(text):
+        if FRAGMENT_PREFIX_RE.search(text, max(0, match.start() - 64), match.start()):
+            continue  # url(#id) / href="#id" fragment reference, not a color
         value = match.group()
         normalized = normalize_hex(value)
         if normalized == "#000000":
@@ -598,17 +781,41 @@ def lint_text(
         elif normalized not in colors:
             add(match.start(), "color", f"{value} is not in the style-guide palette")
 
-    for match in RGBA_RE.finditer(text):
-        rgb = tuple(int(match.group(index)) for index in (1, 2, 3))
-        if rgb not in rgb_triplets:
+    for match in COLOR_FUNC_RE.finditer(text):
+        parsed = parse_color_function(match.group(1), match.group(2))
+        if parsed is None:
+            continue
+        rgb, alpha = parsed
+        if rgb == (0, 0, 0) and alpha >= 1.0:
+            add(match.start(), "pure-black", f"pure black {match.group()} is not allowed")
+        elif rgb not in rgb_triplets:
             add(
                 match.start(),
                 "color",
                 f"{match.group()} is not derived from an allowed palette color",
             )
 
-    for match in BLACK_RGB_RE.finditer(text):
-        add(match.start(), "pure-black", "pure black rgb(0,0,0) is not allowed")
+    def check_named(offset, value):
+        stripped = CSS_QUOTED_RE.sub(lambda quoted: " " * len(quoted.group()), value)
+        for ident in CSS_IDENT_RE.finditer(stripped):
+            rgb = CSS_NAMED_COLORS.get(ident.group().casefold())
+            if rgb is None:
+                continue
+            name = ident.group()
+            if rgb == (0, 0, 0):
+                add(offset + ident.start(), "pure-black", f"pure black {name} is not allowed")
+            elif rgb not in rgb_triplets:
+                add(
+                    offset + ident.start(),
+                    "color",
+                    f"{name} is not in the style-guide palette",
+                )
+
+    for match in COLOR_ATTR_RE.finditer(text):
+        check_named(match.start("value"), match.group("value"))
+    for css_offset, css in css_sources(text):
+        for declaration in CSS_COLOR_DECL_RE.finditer(css):
+            check_named(css_offset + declaration.start("value"), declaration.group("value"))
 
     script_blocks = {match.start(): match for match in SCRIPT_BLOCK_RE.finditer(text)}
     script_openings = list(SCRIPT_OPEN_RE.finditer(text))
@@ -675,14 +882,20 @@ def lint_text(
             href_offset = link_match.start() + href_match.start(2)
             add(href_offset, "external-asset", "external HTTP(S) <link> is not allowed")
 
-    for match in FONT_CSS_RE.finditer(text):
-        unsupported = named_families(match.group(1), allowed_fonts)
-        if unsupported:
-            add(
-                match.start(),
-                "font-family",
-                "unsupported font family: " + ", ".join(unsupported),
-            )
+    # A style="" value ends at its closing quote, so scan attribute values on
+    # their own and the rest of the document with those attributes blanked.
+    style_attrs = list(STYLE_ATTR_RE.finditer(text))
+    font_sources = [(0, masked(text, [match.span() for match in style_attrs]))]
+    font_sources.extend((match.start("value"), match.group("value")) for match in style_attrs)
+    for source_offset, source in font_sources:
+        for match in FONT_CSS_RE.finditer(source):
+            unsupported = named_families(match.group(1), allowed_fonts)
+            if unsupported:
+                add(
+                    source_offset + match.start(),
+                    "font-family",
+                    "unsupported font family: " + ", ".join(unsupported),
+                )
 
     for match in FONT_ATTR_RE.finditer(text):
         unsupported = named_families(match.group(2), allowed_fonts)
