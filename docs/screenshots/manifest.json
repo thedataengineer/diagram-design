@@ -96,8 +96,8 @@
       "slug": "quadrant",
       "source": "skills/diagram-design/assets/example-quadrant.html",
       "screenshot": "docs/screenshots/quadrant.png",
-      "source_sha256": "a147cc85f78958da824d53d226067bff687f3e35a64601394c3075f55c675648",
-      "screenshot_sha256": "c8235b122853a2ab32c981c849c2df3e813435fd34cefc776f5e4cca55b2c8b4",
+      "source_sha256": "4440fe17500774750dfcdab8fb1e3f77c85e017d5cf55261b6d2b6b880f391ab",
+      "screenshot_sha256": "6555b8833bd5a69069b05893354568d675476db6860c44a863d4db45a533ae55",
       "width": 2400,
       "height": 1202
     },

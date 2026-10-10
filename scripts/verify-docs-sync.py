@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Verify that routing and browsing surfaces stay in sync with the skill.
 
-Sixteen drift classes. The first fourteen have each shipped before; the
-fifteenth nearly did (#217); the sixteenth guards the ADR 0004 split:
+Nineteen drift classes. The first fourteen have each shipped before; the
+fifteenth nearly did (#217); the sixteenth guards the ADR 0004 split; the
+last three each let a broken link or stale count through before they existed:
 
 1. The SKILL.md frontmatter description is the only text an agent sees before
    deciding to load the skill — every visual type in the selection table must
@@ -45,13 +46,24 @@ fifteenth nearly did (#217); the sixteenth guards the ADR 0004 split:
    exactly the presets in the output-spec.md size table, in its order.
 16. Every SKILL.md section the ADR 0004 split thinned must keep the exact link
    to each block it moved out, or that content ships unreachable.
+17. Every relative markdown link on SKILL.md, references/*.md, commands/*.md,
+   prompts/*.md, README.md, and CONTRIBUTING.md must resolve, and its #anchor
+   must match a heading slug in the target (GitHub's slugger, duplicate -1/-2
+   suffixes included) or an explicit HTML id. SKILL.md once linked a 2x2
+   heading that slugs to "22", and onboarding.md linked "#url" for "§ URL".
+18. SKILL.md prose that states the visual-type count, as a numeral or in
+   words ("Forty-four visual types"), must equal VISUAL_TYPE_COUNT.
+19. An example-*.html or template*.html named without its assets/ prefix in
+   SKILL.md or a reference must exist in assets/, like a prefixed citation.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
+import unicodedata
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
 
@@ -344,16 +356,10 @@ def skill_reference_links(markdown: str) -> list[str]:
 CODE_FENCE = re.compile(r"[ \t]*(`{3,}|~{3,})")
 
 
-def heading_anchors(markdown: str) -> set[str]:
-    """GitHub-style heading slugs: lower-case, punctuation dropped, spaces to -.
-
-    ATX closing hashes (`### Title ###`) are stripped and lines inside ``` or
-    ~~~ fences are skipped, since neither is a heading GitHub would slug.
-    Not modelled: setext headings, indented code, HTML blocks, duplicate -1 suffixes.
-    """
-    anchors: set[str] = set()
+def unfenced_lines(markdown: str):
+    """Yield (line number, line) for every line outside a ``` or ~~~ fence."""
     fence = ""
-    for line in markdown.splitlines():
+    for number, line in enumerate(markdown.splitlines(), 1):
         marker = CODE_FENCE.match(line)
         if fence:
             # Only a bare run of the same character, at least as long, closes it.
@@ -369,10 +375,56 @@ def heading_anchors(markdown: str) -> set[str]:
         if marker and not (marker.group(1)[0] == "`" and "`" in line[marker.end():]):
             fence = marker.group(1)
             continue
-        heading = re.match(r"#{1,6}[ \t]+(.+?)[ \t]*$", line)
-        if heading:
-            text = re.sub(r"(?:^|[ \t]+)#+$", "", heading.group(1))
-            anchors.add(re.sub(r"[^\w\- ]", "", text.strip().lower()).replace(" ", "-"))
+        yield number, line
+
+
+INLINE_LINK_TEXT = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+INLINE_HTML = re.compile(r"<[^>]+>")
+HTML_ID = re.compile(r"""<[A-Za-z][^>]*?\s(?:id|name)=["']([^"']+)["']""")
+
+
+def github_slug(text: str) -> str:
+    """Slug a heading the way GitHub's slugger does.
+
+    The slug is taken from the rendered text, so a link keeps only its label
+    and inline HTML drops out. Lower-case, then every character that is not a
+    letter, mark, number, connector (`_`), hyphen, or space is removed, and
+    each space becomes a hyphen. `§ URL` is `-url`; `2×2` is `22`.
+    Not modelled: `_emphasis_` underscores, which GitHub drops when rendered.
+    """
+    text = INLINE_HTML.sub("", INLINE_LINK_TEXT.sub(r"\1", text)).strip().lower()
+    kept = "".join(
+        ch
+        for ch in text
+        if ch in " -" or ch.isalnum() or unicodedata.category(ch)[0] in "MN"
+        or unicodedata.category(ch) == "Pc"
+    )
+    return kept.replace(" ", "-")
+
+
+def heading_anchors(markdown: str) -> set[str]:
+    """Every anchor GitHub renders for *markdown*.
+
+    ATX headings slugged by github_slug, with the -1, -2 suffixes GitHub gives
+    a repeated slug, plus explicit HTML `id` / `name` attributes. ATX closing
+    hashes (`### Title ###`) are stripped and lines inside ``` or ~~~ fences
+    are skipped, since neither is a heading GitHub would slug.
+    Not modelled: setext headings, indented code, HTML blocks.
+    """
+    anchors: set[str] = set()
+    occurrences: dict[str, int] = {}
+    for _, line in unfenced_lines(markdown):
+        anchors.update(HTML_ID.findall(line))
+        heading = re.match(r" {0,3}#{1,6}[ \t]+(.+?)[ \t]*$", line)
+        if not heading:
+            continue
+        text = re.sub(r"(?:^|[ \t]+)#+$", "", heading.group(1))
+        original = slug = github_slug(text)
+        while slug in occurrences:
+            occurrences[original] += 1
+            slug = f"{original}-{occurrences[original]}"
+        occurrences[slug] = 0
+        anchors.add(slug)
     return anchors
 
 
@@ -395,6 +447,87 @@ def check_skill_reference_links(
             )
 
 
+MARKDOWN_LINK_SURFACES = (
+    "skills/diagram-design/SKILL.md",
+    "skills/diagram-design/references/*.md",
+    "commands/*.md",
+    "prompts/*.md",
+    "README.md",
+    "CONTRIBUTING.md",
+)
+MARKDOWN_LINK = re.compile(r"!?\[(?:[^\[\]]|\[[^\]]*\])*\]\(([^)\n]*)\)")
+REFERENCE_DEFINITION = re.compile(r"^ {0,3}\[[^\]]+\]:[ \t]*(\S+)")
+CODE_SPAN = re.compile(r"(`+)(?:(?!\1).)+?\1")
+URL_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
+
+
+def markdown_links(markdown: str) -> list[tuple[int, str]]:
+    """Return (line, target) for every inline or reference link outside code."""
+    links: list[tuple[int, str]] = []
+    for number, line in unfenced_lines(markdown):
+        line = CODE_SPAN.sub(lambda m: " " * len(m.group(0)), line)
+        targets = [m.group(1) for m in MARKDOWN_LINK.finditer(line)]
+        definition = REFERENCE_DEFINITION.match(line)
+        if definition:
+            targets.append(definition.group(1))
+        for raw in targets:
+            raw = raw.strip()
+            if raw.startswith("<") and ">" in raw:
+                raw = raw[1:raw.index(">")]
+            elif raw:
+                raw = raw.split()[0]
+            if raw:
+                links.append((number, raw))
+    return links
+
+
+def check_markdown_links(errors: list[str], root: Path) -> None:
+    """Every relative link resolves, and every #anchor lands on a heading."""
+    root = root.resolve()
+    anchor_cache: dict[Path, set[str]] = {}
+
+    def anchors_of(path: Path) -> set[str]:
+        if path not in anchor_cache:
+            anchor_cache[path] = heading_anchors(path.read_text(encoding="utf-8"))
+        return anchor_cache[path]
+
+    surfaces: list[Path] = []
+    for pattern in MARKDOWN_LINK_SURFACES:
+        surfaces.extend(sorted(root.glob(pattern)))
+    for source in surfaces:
+        if not source.is_file():
+            continue
+        relative = source.relative_to(root).as_posix()
+        for number, target in markdown_links(source.read_text(encoding="utf-8")):
+            if URL_SCHEME.match(target) or target.startswith("//"):
+                continue
+            path_part, _, anchor = target.partition("#")
+            path_part = unquote(path_part)
+            if not path_part:
+                destination = source
+            elif path_part.startswith("/"):
+                destination = root / path_part.lstrip("/")
+            else:
+                destination = Path(os.path.normpath(source.parent / path_part))
+            if not destination.exists():
+                errors.append(f"{relative}:{number} links to {target!r}, which does not exist")
+                continue
+            if (
+                anchor
+                and destination.is_file()
+                and destination.suffix == ".md"
+                and unquote(anchor) not in anchors_of(destination)
+            ):
+                try:
+                    shown = destination.relative_to(root).as_posix()
+                except ValueError:
+                    shown = destination.as_posix()
+                errors.append(
+                    f"{relative}:{number} links to {target!r}, which matches no "
+                    f"heading in {shown}"
+                )
+
+
 def check_reference_asset_links(
     errors: list[str], skill_directory: Path
 ) -> None:
@@ -403,6 +536,12 @@ def check_reference_asset_links(
     ref_dir = skill_directory / "references"
     md_paths = [skill_directory / "SKILL.md", *sorted(ref_dir.glob("*.md"))]
     asset_pattern = re.compile(r"assets/([A-Za-z0-9_.-]+\.html)")
+    # The same files named bare, as SKILL.md and the references often do
+    # (`example-quadrant-consultant.html`); a path segment before the name
+    # means some other directory, which this check does not own.
+    bare_pattern = re.compile(
+        r"(?<![A-Za-z0-9_./-])((?:example|template)[A-Za-z0-9_-]*\.html)"
+    )
 
     for path in md_paths:
         if not path.is_file():
@@ -415,6 +554,10 @@ def check_reference_asset_links(
                 errors.append(
                     f"{path.name} cites missing asset 'assets/{asset_name}'"
                 )
+        for match in bare_pattern.finditer(content):
+            asset_name = match.group(1)
+            if not (asset_dir / asset_name).is_file():
+                errors.append(f"{path.name} cites missing asset '{asset_name}'")
 
 
 def scanner_visible_support_references(markdown: str) -> list[str]:
@@ -605,6 +748,51 @@ COUNT_SURFACES = (
     Path("commands/import-excalidraw.md"),
     Path("README.md"),
 )
+
+
+_ONES = (
+    "", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen",
+)
+_TENS = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
+
+
+def number_words(number: int) -> str:
+    """Spell 1-99 the way SKILL.md writes a count: `forty-four`."""
+    if not 0 < number < 100:
+        raise ValueError(f"number_words covers 1-99, not {number}")
+    if number < 20:
+        return _ONES[number]
+    tens, ones = divmod(number, 10)
+    return _TENS[tens] + (f"-{_ONES[ones]}" if ones else "")
+
+
+_WORD_NUMBERS = {number_words(n): n for n in range(1, 100)}
+# A count claim is a numeral or a spelled number directly before "visual
+# type(s)", or the numeral in a "Visual-type guide (N)" heading. Claims under
+# ten are ordinary prose ("two visual types share a grammar"), not the
+# taxonomy size, so they are left alone.
+SKILL_COUNT_RE = re.compile(
+    r"\b(?P<a>\d+|[A-Za-z]+(?:-[A-Za-z]+)?)\s+visual[\s-]types?\b"
+    r"|\bvisual[\s-]types?(?:\s+guide)?\s*\((?P<b>\d+)\)",
+    re.IGNORECASE,
+)
+
+
+def check_skill_count_prose(errors: list[str], markdown: str) -> None:
+    """SKILL.md may state the visual-type count, but only the true one."""
+    for match in SKILL_COUNT_RE.finditer(markdown):
+        token = match.group("a") or match.group("b")
+        value = int(token) if token.isdigit() else _WORD_NUMBERS.get(token.lower())
+        if value is None or value < 10 or value == VISUAL_TYPE_COUNT:
+            continue
+        number = markdown.count("\n", 0, match.start()) + 1
+        phrase = " ".join(match.group(0).split())
+        errors.append(
+            f"SKILL.md:{number} says {value} visual types ({phrase!r}); the "
+            f"selection table and VISUAL_TYPE_COUNT say {VISUAL_TYPE_COUNT}"
+        )
 
 
 def check_type_counts(errors: list[str], root: Path) -> None:
@@ -1599,6 +1787,8 @@ def main() -> int:
         SKILL.parent,
     )
     check_reference_asset_links(errors, SKILL.parent)
+    check_markdown_links(errors, ROOT)
+    check_skill_count_prose(errors, SKILL.read_text(encoding="utf-8"))
     check_packaged_support_references(
         errors,
         SKILL.read_text(encoding="utf-8"),
@@ -1626,7 +1816,8 @@ def main() -> int:
         return 1
     print(
         "OK docs sync: description hooks, gallery reachability, README tree, "
-        "reference links and style-guide anchors, asset citations, packaged support "
+        "reference links and style-guide anchors, markdown links and anchors, "
+        "SKILL.md count prose, asset citations, packaged support "
         "files, routing surfaces, size-preset surfaces, "
         "manifest descriptions, Factory install contract, type-count routing, "
         "High-Level invariants, onboarding trust boundary, Line dark-skin contract, "

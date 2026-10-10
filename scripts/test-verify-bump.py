@@ -367,6 +367,48 @@ def main() -> int:
             "a CSS geometry property reaching the figure",
         )
 
+        # 10b. Attribute spelling. The browser reads a transform whether its
+        #      value is unquoted, single-quoted, or sits after a quoted `>`
+        #      in an earlier attribute; a `[^>]*` tag regex that demands
+        #      double quotes read none of these, and a series path moved one
+        #      full rank row (pitch 56) still reported OK.
+        for label, attr in (
+            ("unquoted-transform", "transform=translate(0,56)"),
+            ("single-quoted-transform", "transform='translate(0,56)'"),
+        ):
+            case(
+                failures, directory, label,
+                source.replace(FOCAL_PATH, FOCAL_PATH.replace(
+                    "<path ", "<path %s " % attr, 1), 1),
+                source, "moves the rendered mark",
+                "an %s on a series path" % label.replace("-", " "),
+            )
+        case(
+            failures, directory, "quoted-gt-ancestor",
+            source.replace(
+                FOCAL_PATH,
+                '<g data-note=">" transform="translate(0 56)">' + FOCAL_PATH + "</g>",
+                1,
+            ),
+            source, "ancestor <g>/<svg> transform",
+            "a transformed ancestor whose tag hides a quoted `>` before the transform",
+        )
+        case(
+            failures, directory, "broken-quote-series",
+            source.replace(FOCAL_PATH, FOCAL_PATH.replace(
+                'data-ranks="1,2,4,6"', 'data-ranks=\'1,2,4,6"', 1), 1),
+            source, "is not a comma list of integers",
+            "a series path whose broken quote swallows the rest of its tag",
+        )
+        case(
+            failures, directory, "dot-transform",
+            source.replace('<circle cx="320" cy="88" r="4" fill="#eb6c36"/>',
+                           '<circle cx="320" cy="88" r="4" fill="#eb6c36" '
+                           'transform=translate(0,56)>', 1),
+            source, "the dot",
+            "an unquoted transform moving a vertex dot off its row",
+        )
+
         # 11. Caption text swapped while the bindings stay put — the exact
         #     defect data-state exists to catch.
         case(

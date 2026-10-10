@@ -315,7 +315,7 @@ The binding contract is the slopegraph's, one level up: the path declares its ra
 <text data-axis="0" data-state="Q1" x="320" y="416" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" letter-spacing="0.14em" text-anchor="middle">Q1</text>
 ```
 
-`data-ranks` is the basis of every geometric check, so a series whose labels go missing stays in the verified set and the missing label is itself reported. `scripts/verify-bump.py` covers the grid, the permutations, the segments, the dots, the focus pairing, the label bindings, label placement on both axes and the captions; `scripts/test-verify-bump.py` proves each check in both polarities. The gutter x is read off the figure — every label sharing an end and a role must agree on one column — so a resized plot needs no constant changed here.
+`data-ranks` is the basis of every geometric check, so a series whose labels go missing stays in the verified set and the missing label is itself reported. `scripts/verify-bump.py` covers the grid, the permutations, the segments, the dots, the focus pairing, the label bindings, label placement on both axes and the captions, and refuses any transform — attribute, inline style or `<style>` rule — on a series path, a vertex dot, a bound label or an ancestor `<g>`, however the attribute is quoted (markup is read through an HTML parser, not a regex); `scripts/test-verify-bump.py` proves each check in both polarities. The gutter x is read off the figure — every label sharing an end and a role must agree on one column — so a resized plot needs no constant changed here.
 
 ## Examples
 

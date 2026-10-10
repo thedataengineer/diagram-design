@@ -541,6 +541,97 @@ def main() -> int:
             else:
                 print(f"OK: {label} data-share geometry fails closed")
 
+        # 17. A transform redraws a cell at an area its attributes never state.
+        #     scale(0.5) on Africa quarters its drawn area while x/y/width/height
+        #     still match data-share. Every carrier and every quoting style is a
+        #     live transform in the browser, so each must be rejected - the
+        #     single-quoted and unquoted forms were invisible to a regex that
+        #     only read double-quoted attributes.
+        africa_body = (
+            '<rect x="576" y="40" width="252" height="252" rx="2" data-share="18.29"'
+        )
+        africa_pair = (
+            '<rect x="576" y="40" width="252" height="252" rx="2" fill="#f5f5f5"/>\n'
+            '      <rect x="576" y="40" width="252" height="252" rx="2" data-share="18.29" '
+            'fill="rgba(45,49,66,0.16)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>'
+        )
+        for label, mutated in (
+            ("attribute", source.replace(africa_body, africa_body + ' transform="scale(0.5)"', 1)),
+            ("single-quoted", source.replace(africa_body, africa_body + " transform='scale(0.5)'", 1)),
+            ("unquoted", source.replace(africa_body, africa_body + " transform=scale(0.5)", 1)),
+            ("inline-style", source.replace(africa_body, africa_body + ' style="transform: scale(0.5)"', 1)),
+            (
+                "ancestor-group",
+                source.replace(africa_pair, '<g transform="scale(0.5)">' + africa_pair + "</g>", 1),
+            ),
+            (
+                "quoted-gt-ancestor",
+                source.replace(
+                    africa_pair, '<g data-note=">" transform="scale(0.5)">' + africa_pair + "</g>", 1
+                ),
+            ),
+            (
+                "style-rule",
+                source.replace("</style>", "rect[data-share] { transform: scale(0.5); }\n</style>", 1),
+            ),
+        ):
+            if mutated == source:
+                failures.append(f"could not build the {label}-transform fixture (anchor moved)")
+                continue
+            code, output = run(write(directory, f"transform-{label}.html", mutated))
+            if code == 0:
+                failures.append(f"{label} transform on a cell was accepted")
+            elif "transform" not in output:
+                failures.append(f"{label} transform lacked a transform finding: {output.strip()}")
+            else:
+                print(f"OK: {label} transform on a cell is rejected")
+
+        # 18. Cells must tile, never overlap. Moving Europe 130px left lays it
+        #     over half of Africa; both keep their honest width x height, so
+        #     the area total and every per-cell share still match - and the
+        #     reader sees half of Africa painted over.
+        overlapping = source.replace(
+            '<rect x="832" y="40" width="124" height="252"',
+            '<rect x="702" y="40" width="124" height="252"',
+        )
+        if overlapping == source:
+            failures.append("could not build the overlapping-cell fixture (anchor moved)")
+        else:
+            code, output = run(write(directory, "overlap.html", overlapping))
+            if code == 0:
+                failures.append("a cell overlapping its neighbour was accepted")
+            elif "overlaps" not in output:
+                failures.append(f"overlap lacked an overlap finding: {output.strip()}")
+            else:
+                print("OK: a cell overlapping another cell is rejected")
+
+        # 18a. Shared edges are tiling, not overlap: closing every 4px gutter so
+        #      neighbours touch must not trip the overlap check.
+        touching = source.replace(
+            '<rect x="832" y="40" width="124" height="252"',
+            '<rect x="828" y="40" width="128" height="252"',
+        )
+        code, output = run(write(directory, "touching.html", touching))
+        if "overlaps" in output:
+            failures.append(f"cells sharing an edge were reported as overlapping: {output.strip()}")
+        else:
+            print("OK: cells that share an edge are not an overlap")
+
+        # 19. Attribute quoting is not a way out of the area check either: a
+        #     single-quoted width is still the width the browser draws.
+        single_quoted = source.replace(
+            '<rect x="576" y="40" width="252" height="252" rx="2" data-share="18.29"',
+            "<rect x='576' y='40' width='200' height='252' rx='2' data-share='18.29'",
+        ).replace(
+            '<rect x="576" y="40" width="252" height="252" rx="2" fill="#f5f5f5"/>',
+            "<rect x=576 y=40 width=200 height=252 rx=2 fill=\"#f5f5f5\"/>",
+        )
+        code, output = run(write(directory, "single-quoted-undersized.html", single_quoted))
+        if code == 0 or "relative" not in output:
+            failures.append(f"single-quoted undersized cell was not measured: {output.strip()}")
+        else:
+            print("OK: single-quoted and unquoted cell geometry is read and checked")
+
     for failure in failures:
         print(f"FAIL: {failure}")
     if failures:

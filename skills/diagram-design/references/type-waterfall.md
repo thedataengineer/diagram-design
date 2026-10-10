@@ -66,7 +66,7 @@ Endpoint positions round to the nearest integer pixel and never snap to the 4px 
 - **Zero bridges are dropped, never drawn.** A zero-height bar is invisible ink that still occupies a column; state it in prose or the source line instead.
 - **A degenerate start (zero or negative total) is a named failure,** not a silently rescaled chart — the scale is derived from the start anchor.
 
-These rules are executable: `scripts/verify-waterfall.py` reads each bar's declaration, recomputes the running totals, refits the shared scale from the start anchor, and fails on any conservation, geometry, carry, label, or sign-treatment drift. `scripts/test-verify-waterfall.py` proves both polarities — the shipped examples pass, and each mutation class above fails with a named finding.
+These rules are executable: `scripts/verify-waterfall.py` reads each bar's declaration, recomputes the running totals, refits the shared scale from the start anchor, and fails on any conservation, geometry, carry, label, or sign-treatment drift. It also refuses any transform — attribute, inline style or `<style>` rule — on a bar, a carry or an ancestor `<g>`, however the attribute is quoted, because markup is read through an HTML parser rather than a regex; a transformed value label does not count as printed on its bar. `scripts/test-verify-waterfall.py` proves both polarities — the shipped examples pass, and each mutation class above fails with a named finding.
 
 ## Examples
 

@@ -237,7 +237,7 @@ Structural geometry sits on a 4px grid: node origins, widths, heights, gaps, and
 | Max annotation callouts | 2 |
 | Max motion (optional) | 8 steps, 12 marked items, 2 simultaneous items — see [animation.md](references/animation.md) |
 
-Per-type limits (lifelines, lanes, series, bars, stages, and the rest): [layout-budget.md § Complexity budget](references/layout-budget.md#complexity-budget-per-diagram). Check your type's row before drawing.
+Per-type limits (lifelines, lanes, series, bars, stages, and the rest): [layout-budget.md § Complexity budget](references/layout-budget.md#complexity-budget-per-diagram). Check your type's row before drawing. Type rows only tighten these, except two named raises: dependency (14 edges) and org chart (12 nodes).
 
 If you exceed, split into two diagrams (overview + detail).
 
@@ -317,7 +317,7 @@ Every diagram ships in three variants (see `assets/`):
 | **Minimal light** (default) | `assets/template.html`, `example-<type>.html` | Screenshot-ready. Diagram + title. Warm paper. |
 | **Minimal dark** | `assets/template-dark.html`, `example-<type>-dark.html` | Dark mode sites, slides, high-contrast posts. |
 | **Full editorial** | `assets/template-full.html`, `example-<type>-full.html` | Long-form posts where the diagram is the hero. |
-| **Consultant special** (quadrant only) | `example-quadrant-consultant.html` | BCG/McKinsey-style 2×2 scenario matrix. See [type-quadrant.md](references/type-quadrant.md#consultant-special-2x2-scenario-matrix). |
+| **Consultant special** (quadrant only) | `example-quadrant-consultant.html` | BCG/McKinsey-style 2×2 scenario matrix. See [type-quadrant.md](references/type-quadrant.md#consultant-special-22-scenario-matrix). |
 
 **Sketchy variant** (optional, applied to any of the above): a hand-drawn stroke filter for essays, not technical docs. See [primitive-sketchy.md](references/primitive-sketchy.md).
 
@@ -356,7 +356,7 @@ Set these four import decisions **before** drawing. Full spec: [output-spec.md](
 |---|---|---|
 | **Format** | `html` · `svg` · `png` · `html+png` | `html` |
 | **Size** | `doc-inline` · `doc-wide` · `slide-16x9` · `slide-4x3` · `social-og` · `social-square` · `print-a4-landscape` · `print-a3-landscape` · `print-letter-landscape` · `fit` | `doc-inline` |
-| **Detail** | `faithful` (≤24 nodes, zoned) · `balanced` (≤12) · `simplified` (≤7) | `balanced` |
+| **Detail** | `faithful` (≤24 nodes, zoned) · `balanced` (≤9, the §7 budget) · `simplified` (≤7) | `balanced` |
 | **Audience** | `engineer` · `mixed` · `executive` — governs wording, not count | `mixed` |
 
 The size preset sets the `viewBox` **and** the type ramp; `faithful` is the only exemption from the §7 budget — zoned above 9 nodes, split above 24. The §6 connector rules never relax.

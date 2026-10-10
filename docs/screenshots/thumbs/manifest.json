@@ -279,11 +279,11 @@
     {
       "thumb": "quadrant.webp",
       "source": "docs/screenshots/quadrant.png",
-      "source_sha256": "c8235b122853a2ab32c981c849c2df3e813435fd34cefc776f5e4cca55b2c8b4",
+      "source_sha256": "6555b8833bd5a69069b05893354568d675476db6860c44a863d4db45a533ae55",
       "width": 600,
       "height": 300,
       "quality": 82,
-      "thumb_sha256": "c52f7f54fdabf04b928d52db8301bd38582378d3e1ac09d6bae9ff940b2b4577"
+      "thumb_sha256": "8ef1508906aac5c44ba1555b3e14775c6e816e5b39097d55b7d102838ced15f2"
     },
     {
       "thumb": "radar.webp",

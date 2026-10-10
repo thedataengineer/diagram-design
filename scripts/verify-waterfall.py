@@ -33,6 +33,23 @@ it:
    At most one bar may take the accent focal treatment, which replaces its
    sign fill (the signed label and geometry still carry the direction).
 
+6. NO TRANSFORMS — the checker reads raw coordinates, so a transform on a
+   bar or carry, or on any <g>/<svg> ancestor of one, moves the rendered mark
+   away from the arithmetic it was checked against. All three carriers are
+   refused: the `transform` attribute, an inline `style`, and a rule in a
+   <style> block. A value label carrying a transform (own or ancestor) is not
+   counted as printed on its bar, because it is not drawn where it is read.
+
+Markup is read through the stdlib html.parser.HTMLParser, never a regex,
+following verify-slopegraph.py, so a tag is recognized exactly when a browser
+would recognize it: a quoted `>` inside an attribute value does not end the
+tag, a repeated attribute keeps its FIRST value, unquoted and single-quoted
+values parse as their canonical form, and a comment's contents are never live
+markup. The double-quote-only `[^>]*` regex reader this replaced let
+`transform='translate(0,120)'` move the Headcount bridge 120px while the
+checker printed OK. A <rect> that the raw text says declares data-role but
+the parser cannot emit is reported, never dropped.
+
 Degenerate data fails closed with a named finding: a start total of zero or
 less has no scale to fit, and a zero delta is invisible ink that still
 occupies a column.
@@ -47,26 +64,21 @@ Exit: 0 clean, 1 findings, 2 usage.
 from __future__ import annotations
 
 import argparse
-import html
 import math
 import re
 import sys
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
+from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ASSET_DIR = ROOT / "skills/diagram-design/assets"
 
-RECT_RE = re.compile(r"<rect\b(?P<attrs>[^>]*?)/?>", re.IGNORECASE)
-LINE_RE = re.compile(r"<line\b(?P<attrs>[^>]*?)/?>", re.IGNORECASE)
-TEXT_RE = re.compile(r"<text\b(?P<attrs>[^>]*)>(?P<body>.*?)</text>", re.IGNORECASE | re.DOTALL)
-ATTR_RE = re.compile(r'(?P<name>[\w:-]+)="(?P<value>[^"]*)"')
-TAG_RE = re.compile(r"<[^>]+>")
 COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
-GROUP_OPEN_RE = re.compile(r"<(?:g|svg)\b(?P<attrs>[^>]*?)(?P<selfclose>/?)>", re.IGNORECASE)
-GROUP_CLOSE_RE = re.compile(r"</(?:g|svg)\s*>", re.IGNORECASE)
-STYLE_RE = re.compile(r"<style\b[^>]*>(?P<body>.*?)</style>", re.IGNORECASE | re.DOTALL)
+# Detection only - a raw-text count read alongside the parser, because the
+# parser is exactly what a broken quote defeats. Geometry is never read here.
+DECLARES_BAR_RE = re.compile(r"<rect\b[^>]*\bdata-role\s*=", re.IGNORECASE)
 CSS_MOVES_MARK_RE = re.compile(
     r"(?:^|[{;}\n])\s*(?:-(?:webkit|moz|ms|o)-)?"
     r"(?P<prop>transform|translate|rotate|scale|x|y"
@@ -88,8 +100,109 @@ ACCENT_STROKES = {"#eb6c36", "#f08a59"}
 SIGN_CHARS = {"+": 1, "-": -1, "\u2212": -1}
 
 
-def attrs_of(tag_attrs: str) -> dict[str, str]:
-    return {m.group("name").lower(): m.group("value") for m in ATTR_RE.finditer(tag_attrs)}
+GROUP_TAGS = ("g", "svg")          # the only ancestors whose transform is inherited
+BODY_TAGS = ("text", "style")      # elements whose character data is read
+MARK_TAGS = ("rect", "line")       # the elements this contract binds
+
+
+class Element:
+    """One start tag this checker cares about, as the browser tokenized it."""
+
+    __slots__ = ("tag", "attrs", "body", "ancestor")
+
+    def __init__(self, tag: str, attrs: dict[str, str], ancestor: str | None) -> None:
+        self.tag = tag
+        self.attrs = attrs          # first-wins dict, names lower-cased, values unescaped
+        self.body = ""              # character data up to the matching end tag
+        self.ancestor = ancestor    # how the nearest transformed <g>/<svg> moves it, or None
+
+
+def first_wins(attrs: list[tuple[str, str | None]]) -> dict[str, str]:
+    """Attributes as the browser keeps them: on a repeat, the FIRST wins.
+
+    HTML parsing drops a duplicate attribute rather than overwriting it, so a
+    second `y` on a bar is not in the document at all. A present-but-valueless
+    attribute is an empty string, not an absent one.
+    """
+    seen: dict[str, str] = {}
+    for name, value in attrs:
+        seen.setdefault(name, "" if value is None else value)
+    return seen
+
+
+class Scanner(HTMLParser):
+    """Collect rects, lines, texts and styles, each with transformed ancestry.
+
+    The stdlib parser, never a `[^>]*` regex, following verify-slopegraph.py.
+    HTMLParser lowercases names, reads unquoted and single-quoted values,
+    unescapes entities, keeps a quoted `>` inside the value it belongs to,
+    and never emits tag-like text inside a comment or <script>/<style> raw
+    text. The regex reader this replaced read only double-quoted values and
+    stopped at the first `>`, so `transform='translate(0,120)'` on a bridge,
+    or `<g data-note=">" transform="...">` around one, moved a bar 120px
+    while the checker printed OK - and a commented-out bar was still read as
+    live data.
+    """
+
+    def __init__(self, source: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rects: list[Element] = []
+        self.lines: list[Element] = []
+        self.texts: list[Element] = []
+        self.styles: list[Element] = []
+        self.error: str | None = None
+        self._groups: list[tuple[str, str | None]] = []
+        self._open: list[tuple[str, Element]] = []
+        try:
+            self.feed(source)
+            self.close()
+        except Exception as exc:  # noqa: BLE001 - any parser failure fails closed
+            self.error = f"{type(exc).__name__}: {exc}"
+
+    def _ancestor(self) -> str | None:
+        for _tag, how in reversed(self._groups):
+            if how is not None:
+                return how
+        return None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._start(tag, first_wins(attrs), closes=False)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._start(tag, first_wins(attrs), closes=True)
+
+    def _start(self, tag: str, attrs: dict[str, str], closes: bool) -> None:
+        if tag in GROUP_TAGS:
+            if not closes:
+                self._groups.append((tag, transform_carrier(attrs)))
+            return
+        if tag not in MARK_TAGS and tag not in BODY_TAGS:
+            return
+        element = Element(tag, attrs, self._ancestor())
+        if tag == "rect":
+            self.rects.append(element)
+            return
+        if tag == "line":
+            self.lines.append(element)
+            return
+        (self.texts if tag == "text" else self.styles).append(element)
+        if not closes:
+            self._open.append((tag, element))
+
+    def handle_endtag(self, tag: str) -> None:
+        stack = self._groups if tag in GROUP_TAGS else self._open if tag in BODY_TAGS else None
+        if stack is None:
+            return
+        # Pop back to the matching open tag. An unclosed transformed group is
+        # never popped, so it covers everything after it.
+        for index in range(len(stack) - 1, -1, -1):
+            if stack[index][0] == tag:
+                del stack[index:]
+                return
+
+    def handle_data(self, data: str) -> None:
+        if self._open:
+            self._open[-1][1].body += data
 
 
 def parse_number(raw: str) -> float | None:
@@ -132,61 +245,32 @@ def transform_carrier(attrs: dict[str, str]) -> str | None:
     return None
 
 
-def transformed_spans(source: str) -> list[tuple[int, int, str]]:
-    """Return source spans covered by transformed SVG/group ancestors."""
-    events: list[tuple[int, int, str | None]] = []
-    for match in GROUP_OPEN_RE.finditer(source):
-        if match.group("selfclose"):
-            continue
-        attrs = attrs_of(match.group("attrs"))
-        events.append((match.start(), 0, transform_carrier(attrs)))
-    for match in GROUP_CLOSE_RE.finditer(source):
-        events.append((match.start(), 1, None))
-    events.sort(key=lambda event: (event[0], event[1]))
+def check_transforms(doc: Scanner, errors: list[str]) -> None:
+    """Reject transforms that make rendered bar/carry geometry differ from raw coordinates.
 
-    spans: list[tuple[int, int, str]] = []
-    stack: list[tuple[int, str | None]] = []
-    for position, kind, how in events:
-        if kind == 0:
-            stack.append((position, how))
-        elif stack:
-            start, transformed_by = stack.pop()
-            if transformed_by is not None:
-                spans.append((start, position, transformed_by))
-    for start, transformed_by in stack:
-        if transformed_by is not None:
-            spans.append((start, len(source), transformed_by))
-    return spans
-
-
-def check_transforms(source: str, errors: list[str]) -> None:
-    """Reject transforms that make rendered bar/carry geometry differ from raw coordinates."""
-    source = COMMENT_RE.sub("", source)
-    spans = transformed_spans(source)
-
-    def enclosing(offset: int) -> str | None:
-        for start, end, how in spans:
-            if start <= offset <= end:
-                return f"ancestor {how}"
-        return None
-
-    for pattern, contract_attr, label in (
-        (RECT_RE, "data-role", "waterfall bar"),
-        (LINE_RE, "data-carry", "waterfall carry"),
+    All three carriers - the `transform` attribute, an inline style, and a
+    rule in a <style> block - on the element and on every <g>/<svg> above it.
+    Attributes are read as the parser tokenized them, so an unquoted or
+    single-quoted transform, or one behind a quoted `>`, is still read.
+    """
+    for elements, contract_attr, label in (
+        (doc.rects, "data-role", "waterfall bar"),
+        (doc.lines, "data-carry", "waterfall carry"),
     ):
-        for match in pattern.finditer(source):
-            attrs = attrs_of(match.group("attrs"))
-            if contract_attr not in attrs:
+        for element in elements:
+            if contract_attr not in element.attrs:
                 continue
-            how = transform_carrier(attrs) or enclosing(match.start())
+            how = transform_carrier(element.attrs)
+            if how is None and element.ancestor is not None:
+                how = f"ancestor {element.ancestor}"
             if how is not None:
                 errors.append(
                     f"{label} carries {how}; bake the movement into its coordinates so "
                     "the verifier checks what the browser draws"
                 )
 
-    for match in STYLE_RE.finditer(source):
-        found = CSS_MOVES_MARK_RE.search(match.group("body"))
+    for element in doc.styles:
+        found = CSS_MOVES_MARK_RE.search(element.body)
         if found is not None:
             errors.append(
                 f"CSS {found.group('prop').lower()!r} declaration can move verified waterfall "
@@ -237,13 +321,15 @@ def parse_signed(raw: str, *, signed_required: bool) -> tuple[Fraction | None, b
     return parse_exact_number(text), False
 
 
-def parse_bars(source: str, errors: list[str]) -> list[Bar]:
+def parse_bars(doc: Scanner, source: str, errors: list[str]) -> list[Bar]:
     bars: list[Bar] = []
-    for match in RECT_RE.finditer(source):
-        attrs = attrs_of(match.group("attrs"))
+    contract_rects = 0
+    for element in doc.rects:
+        attrs = element.attrs
         role = attrs.get("data-role")
         if role is None:
             continue
+        contract_rects += 1
         if role not in {"total", "delta", "subtotal"}:
             errors.append(f"bar {len(bars) + 1} declares unknown data-role {role!r}")
             continue
@@ -268,6 +354,16 @@ def parse_bars(source: str, errors: list[str]) -> list[Bar]:
         bars.append(
             Bar(len(bars), role, value, name, x, y, w, h,
                 attrs.get("fill", ""), attrs.get("stroke", ""))
+        )
+    # A <rect> whose raw text declares data-role but which the parser never
+    # emitted with one is markup the browser reads differently from its
+    # author - most often a broken quote that swallows the tag. Dropping it
+    # silently would close the walk around a missing bar.
+    declared = len(DECLARES_BAR_RE.findall(COMMENT_RE.sub("", source)))
+    if declared > contract_rects:
+        errors.append(
+            f"{declared} <rect> tag(s) declare data-role in the raw text but "
+            f"{declared - contract_rects} could not be parsed as bars; check the quoting of every bar"
         )
     return bars
 
@@ -375,11 +471,11 @@ def check_geometry(bars: list[Bar], levels: list[tuple[Fraction, Fraction]], err
     return baseline, scale
 
 
-def check_carries(source: str, bars: list[Bar], levels: list[tuple[Fraction, Fraction]],
+def check_carries(doc: Scanner, bars: list[Bar], levels: list[tuple[Fraction, Fraction]],
                   baseline: float, scale: float, errors: list[str]) -> None:
     carries: list[tuple[float, float, float, Fraction, str]] = []
-    for match in LINE_RE.finditer(source):
-        attrs = attrs_of(match.group("attrs"))
+    for element in doc.lines:
+        attrs = element.attrs
         declared = attrs.get("data-carry")
         if declared is None:
             continue
@@ -420,28 +516,32 @@ def check_carries(source: str, bars: list[Bar], levels: list[tuple[Fraction, Fra
             )
 
 
-def printed_values(source: str, bar: Bar) -> list[tuple[Fraction, bool]]:
+def printed_values(doc: Scanner, bar: Bar) -> list[tuple[Fraction, bool]]:
     values: list[tuple[Fraction, bool]] = []
-    for match in TEXT_RE.finditer(source):
-        attrs = attrs_of(match.group("attrs"))
+    for element in doc.texts:
+        attrs = element.attrs
         x, y = (parse_number(attrs.get(key, "")) for key in ("x", "y"))
         if any(key in attrs for key in ("style", "display", "visibility", "opacity", "fill-opacity")):
+            continue
+        # A transformed label is not drawn at the x/y read here, so it cannot
+        # be the label that sits on this bar.
+        if "transform" in attrs or element.ancestor is not None:
             continue
         expected_y = bar.bottom + 12 if bar.role == "delta" and bar.value < 0 else bar.y - 8
         if x is None or y is None or attrs.get("text-anchor") != "middle":
             continue
         if abs(x - (bar.x + bar.w / 2)) > GEOMETRY_TOLERANCE or abs(y - expected_y) > GEOMETRY_TOLERANCE:
             continue
-        body = html.unescape(TAG_RE.sub("", match.group("body"))).strip()
+        body = element.body.strip()
         value, signed = parse_signed(body, signed_required=False)
         if value is not None:
             values.append((value, signed))
     return values
 
 
-def check_printed(source: str, bars: list[Bar], errors: list[str]) -> None:
+def check_printed(doc: Scanner, bars: list[Bar], errors: list[str]) -> None:
     for bar in bars:
-        printed = printed_values(source, bar)
+        printed = printed_values(doc, bar)
         needs_sign = bar.role == "delta"
         hit = any(
             value == bar.exact_value and (signed or not needs_sign)
@@ -502,21 +602,25 @@ def verify_file(path: Path) -> list[str]:
     source = path.read_text(encoding="utf-8")
     paper_match = re.search(r'--color-paper\s*:\s*(#[0-9a-fA-F]{6})', source)
     paper = paper_match[1].lower() if paper_match else None
-    bars = parse_bars(source, errors)
+    doc = Scanner(source)
+    if doc.error is not None:
+        errors.append(f"could not be parsed as HTML ({doc.error}); refusing to report OK on it")
+        return errors
+    bars = parse_bars(doc, source, errors)
     if not bars:
         errors.append("no bars declare data-role/data-value; the waterfall data contract is missing")
         return errors
     if not check_structure(bars, errors):
         return errors
-    check_transforms(source, errors)
+    check_transforms(doc, errors)
     levels = running_levels(bars, errors)
     if levels is None:
         return errors
     fitted = check_geometry(bars, levels, errors)
     if fitted is not None:
         baseline, scale = fitted
-        check_carries(source, bars, levels, baseline, scale, errors)
-    check_printed(source, bars, errors)
+        check_carries(doc, bars, levels, baseline, scale, errors)
+    check_printed(doc, bars, errors)
     check_sign_treatment(bars, errors, paper)
     return errors
 

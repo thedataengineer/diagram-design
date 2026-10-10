@@ -25,6 +25,9 @@ Negative cases (must FAIL):
   N11 — focal value text fails AA contrast against the focal accent fill.
   N12 — duplicate axis declarations silently shrink the grid vocabulary.
   N13 — dark focal text is checked against the wrong underlay color.
+  N14 — a ramp falling in sub-tolerance steps (drift accumulates).
+  N15 — fill-opacity / opacity (attribute or inline style) attenuates a cell.
+  P4  — an identity fill-opacity="1" opacity="1.0" still passes.
 
 Usage: python3 scripts/test-verify-heatmap.py
 Exit: 0 all pass, 1 a case failed.
@@ -335,6 +338,70 @@ def main() -> int:
             GOOD_DARK.read_text(encoding="utf-8"),
             False,
             "dark focal value text fails 4.5:1 contrast against the actual dark underlay",
+        )
+
+        # N14: a ramp that falls in sub-tolerance steps. Every non-focal cell is
+        # renumbered 1..29 in document order and its opacity stepped DOWN by
+        # 0.02 per value (0.60 → 0.04). Each step is inside the 0.03 rendering
+        # tolerance, so a check that compares each value only to its predecessor
+        # lets the drift accumulate into a fully inverted ramp.
+        counter = iter(range(1, 1000))
+
+        def drift(match: re.Match[str]) -> str:
+            index = next(counter)
+            opacity = 0.62 - 0.02 * index
+            return (
+                f'data-value="{index}"{match.group(1)}'
+                f'fill="rgba(45,49,66,{opacity:.2f})"'
+            )
+
+        drifting = re.sub(
+            r'data-value="\d+"((?:(?!data-focal)[^>])*?)fill="rgba\(45,49,66,[\d.]+\)"',
+            drift,
+            original,
+        )
+        case(
+            failures,
+            d,
+            "N14-drifting-ramp.html",
+            drifting,
+            original,
+            False,
+            "opacity falls 0.60 → 0.04 in 0.02 steps across 29 values",
+        )
+
+        # N15: per-cell opacity attributes attenuate the rgba alpha. The value-6
+        # cell's fill still reads 0.43, but fill-opacity / opacity / a style
+        # declaration multiply it down to a near-blank cell.
+        AUTH_S3 = (
+            'data-row="auth" data-col="S3" data-value="6" '
+            'x="400" y="64" width="116" height="56" fill="rgba(45,49,66,0.43)"'
+        )
+        for label, extra in (
+            ("fill-opacity", ' fill-opacity="0.1"'),
+            ("opacity", ' opacity="0.1"'),
+            ("style-fill-opacity", ' style="fill-opacity: 0.1"'),
+            ("style-opacity", " style='opacity:.1'"),
+        ):
+            case(
+                failures,
+                d,
+                f"N15-{label}.html",
+                original.replace(AUTH_S3, AUTH_S3 + extra, 1),
+                original,
+                False,
+                f"{label} 0.1 multiplies a 0.43 cell down to 0.043",
+            )
+
+        # P4: an identity fill-opacity changes nothing and must still pass.
+        case(
+            failures,
+            d,
+            "P4-identity-fill-opacity.html",
+            original.replace(AUTH_S3, AUTH_S3 + ' fill-opacity="1" opacity="1.0"', 1),
+            original,
+            True,
+            "fill-opacity=1 and opacity=1 leave the ramp intact",
         )
 
 

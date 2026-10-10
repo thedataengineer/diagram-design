@@ -19,6 +19,13 @@ Routed from SKILL.md §7 and §8. SKILL.md keeps the grid rule in one line, the 
 
 These are the per-type limits. The universal rows in SKILL.md §7 (9 nodes, 12 arrows or transitions, 2 coral elements, 2 annotation callouts, and the motion limits) apply to every type on top of these, and a semantic pattern's own budget in [semantic-patterns.md](semantic-patterns.md) can only tighten them.
 
+A type row tightens the universal rows, with exactly two named exceptions that raise one universal limit for one type:
+
+- **Dependency: 14 edges** (not 12). A dependency graph's edges are the content, and 9 nodes across 4 ranks routinely need more than 12. Nodes stay at 9.
+- **Org chart: 12 nodes** (not 9). Reporting lines are a strict tree, so 12 boxes read as 4 tiers of at most 5 reports, not as a 12-node network. Edges stay at 12 or fewer.
+
+Rows that count something other than nodes or arrows (quadrant items, Gantt tasks, scatter points, kanban or story-map cards, axonometric boxes) are their own limits and are not exceptions. Any other row that seems to exceed 9 nodes or 12 arrows does not: the universal row wins.
+
 | Limit | Rule |
 |---|---|
 | Max unique components / relationships / ledger entries (architecture delta) | 8 / 10 / 8 |

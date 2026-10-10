@@ -20,7 +20,7 @@
 | Limit | Rule |
 |---|---|
 | Max nodes | 9 |
-| Max edges | 14 |
+| Max edges | 14 — a named exception to the universal 12 ([layout-budget.md](layout-budget.md#complexity-budget-per-diagram)) |
 | Max rank layers | 4 |
 | Max highlighted cycles | 1 |
 | Max accent elements | 2 |

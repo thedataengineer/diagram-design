@@ -31,6 +31,8 @@ Not for: ranked lists where exact values matter more than proportion (use a **ba
 
 Without it, a verifier has to infer the intended share from the text inside the cell, which quietly exempts the one cell that has no text — and that is the sliver, the cell the 4px grid distorts most. A shipped treemap once had its smallest cell drawn 50% oversized with every gate green for exactly this reason. `scripts/verify-treemap.py` now fails closed on any cell without it, and cross-checks `data-share` against the percentage the label prints, because a label and the metadata are two statements of one fact.
 
+**Cells tile, and nothing transforms them.** No two cells may overlap — a shared edge is fine, a cell laid over its neighbour is not, because both keep their honest width × height while the reader sees one painted over the other. And no `transform`, by any carrier — the `transform` attribute, an inline `style`, or a stylesheet rule — on a cell, a hosted label or marker, or an ancestor `g`/`svg`: `scale(0.5)` quarters a cell's drawn area while its attributes still state the full size. The one exception is a label's `rotate(±90 x y)` about its own anchor, which the fit check models. `scripts/verify-treemap.py` rejects both, whatever the attribute quoting.
+
 ### Cell element pattern
 
 ```svg

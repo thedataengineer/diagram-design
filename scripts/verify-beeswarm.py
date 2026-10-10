@@ -79,6 +79,19 @@ Nine invariants:
    below that nothing here is verifiable. The documented budget (20-300
    dots) is enforced at BOTH ends on top of that floor.
 
+Markup is read through the stdlib html.parser.HTMLParser, never a regex,
+following verify-slopegraph.py, so a tag is recognized exactly when a browser
+would recognize it: a quoted `>` inside an attribute value does not end the
+tag, a repeated attribute keeps its FIRST value, unquoted and single-quoted
+values and upper-case names parse as their canonical form, and a comment's
+contents are never live markup. The `[^>]*` regex reader this replaced
+demanded quoted values and stopped at the first `>`, so
+`transform=translate(300,0)` on a dot, or `<g data-note=">" transform="...">`
+around the swarm, moved rendered marks while the checker printed OK. Scope is
+read twice - from the raw text, comments blanked, and through the parser - so
+a <circle> whose broken quoting the parser cannot emit still claims the file
+and is reported as unparseable.
+
 The basis for geometry is the `data-value` each dot circle declares, never
 the rendered text.
 
@@ -112,23 +125,16 @@ Exit: 0 clean, 1 findings, 2 usage.
 from __future__ import annotations
 
 import argparse
-import html
 import math
 import re
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ASSET_DIR = ROOT / "skills/diagram-design/assets"
 
-CIRCLE_RE = re.compile(r"<circle\b(?P<attrs>[^>]*?)/?>", re.IGNORECASE)
-TEXT_RE = re.compile(r"<text\b(?P<attrs>[^>]*)>(?P<body>.*?)</text>", re.IGNORECASE | re.DOTALL)
 COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
-NAMED_RE = re.compile(r"<(?P<tag>title|desc)\b[^>]*>(?P<body>.*?)</(?P=tag)>",
-                      re.IGNORECASE | re.DOTALL)
-GROUP_OPEN_RE = re.compile(r"<(?:g|svg)\b(?P<attrs>[^>]*?)(?P<selfclose>/?)>", re.IGNORECASE)
-GROUP_CLOSE_RE = re.compile(r"</(?:g|svg)\s*>", re.IGNORECASE)
-STYLE_RE = re.compile(r"<style\b[^>]*>(?P<body>.*?)</style>", re.IGNORECASE | re.DOTALL)
 # Every CSS property that can move or resize a mark WITHOUT touching the
 # attributes this checker reads. The enumeration IS the invariant, and it has
 # already been wrong twice: `transform:` alone missed `style="transform: ..."`
@@ -157,7 +163,6 @@ CSS_MOVES_MARK_RE = re.compile(
     r"\s*:",
     re.IGNORECASE,
 )
-TAG_RE = re.compile(r"<[^>]+>")
 # The COMPLETE numeric token an author may print: sign, comma-grouped
 # thousands, decimals, leading-dot decimals, exponents. Matching only the
 # first fragment is how "512,000" once agreed with metadata that said 512.
@@ -166,17 +171,13 @@ NUMBER_RE = re.compile(
 )
 DIGIT_RE = re.compile(r"\d")
 
-# Both quote styles: matching only double quotes drops a single-quoted dot
-# from the verified set without a word, which is exactly how a lie ships.
-ATTR_RE = re.compile(
-    r"""(?P<name>[\w:-]+)\s*=\s*(?P<quote>["'])(?P<value>.*?)(?P=quote)""",
-    re.DOTALL,
-)
-# The scope key - checked against a <circle>'s RAW attribute text, never the
-# whole source (bubble ticks put data-value on <text>) and never only the
-# parsed attributes (a circle whose markup is too broken to parse must still
-# be claimed, so the breakage is a finding rather than a silent skip).
-DECLARES_VALUE_RE = re.compile(r"\bdata-value\s*=", re.IGNORECASE)
+# The scope key, read from the RAW text (comments blanked) and scoped to a
+# <circle> start tag - never the whole source, because bubble ticks put
+# data-value on <text>. Detection only: it is read BEFORE the parser because
+# the parser is exactly what a broken quote defeats, and a circle whose markup
+# is too broken to parse must still claim the file so the breakage is a
+# finding rather than a silent skip. Geometry is never read from this regex.
+DECLARES_DOT_RE = re.compile(r"<circle\b[^>]*\bdata-value\s*=", re.IGNORECASE)
 
 # The accent stroke on either skin, hex or rgba. The focal count keys on the
 # STROKE: it is the mark's edge and the thing a reader identifies the accent
@@ -230,17 +231,140 @@ def blank_comments(source: str) -> str:
     return COMMENT_RE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), source)
 
 
-def attrs_of(raw: str) -> dict:
-    found = {}
-    for match in ATTR_RE.finditer(raw):
-        name = match.group("name").lower()
-        if name not in found:            # a browser keeps the FIRST of a repeat
-            found[name] = html.unescape(match.group("value"))
-    return found
+GROUP_TAGS = ("g", "svg")                     # the only ancestors whose transform is inherited
+BODY_TAGS = ("text", "title", "desc", "style")  # elements whose character data is read
+MARK_TAGS = ("circle",)                       # the element this contract binds
+
+
+class Element:
+    """One start tag this checker cares about, as the browser tokenized it."""
+
+    __slots__ = ("tag", "attrs", "offset", "body", "ancestor")
+
+    def __init__(self, tag, attrs, offset, ancestor):
+        self.tag = tag
+        self.attrs = attrs          # first-wins dict, names lower-cased, values unescaped
+        self.offset = offset        # offset of `<` in the source, for line numbers
+        self.body = ""              # character data up to the matching end tag
+        self.ancestor = ancestor    # how the nearest transformed <g>/<svg> moves it, or None
+
+
+def first_wins(attrs) -> dict:
+    """Attributes as the browser keeps them: on a repeat, the FIRST wins.
+
+    HTML parsing drops a duplicate attribute rather than overwriting the one
+    already on the token, so a second `cx` on a dot is not in the document at
+    all. A present-but-valueless attribute is an empty string, not an absent
+    one.
+    """
+    seen = {}
+    for name, value in attrs:
+        seen.setdefault(name, "" if value is None else value)
+    return seen
+
+
+class _Scanner(HTMLParser):
+    """Collect circles, texts, title/desc and style elements with ancestry.
+
+    The stdlib parser, never a `[^>]*` regex, following verify-slopegraph.py.
+    HTMLParser lowercases tag and attribute names, reads unquoted and
+    single-quoted values, tolerates whitespace around `=`, unescapes entities,
+    keeps a quoted `>` inside the value it belongs to, and never emits
+    tag-like text inside a comment or <script>/<style> raw text - each of
+    those a case the regex reader this replaced got wrong. It read only
+    quoted values and stopped at the first `>`, so `transform=translate(300,0)`
+    on a dot, or `<g data-note=">" transform="...">` around the swarm, moved
+    the rendered marks while the checker printed OK. Ancestry is tracked for
+    <g>/<svg> only, the elements whose transform a child inherits.
+    """
+
+    def __init__(self, source: str):
+        super().__init__(convert_charrefs=True)
+        self.circles: list = []
+        self.texts: list = []
+        self.named: list = []      # <title> and <desc>
+        self.styles: list = []
+        self.error = None
+        self._groups: list = []    # (tag, how) per open <g>/<svg>
+        self._open: list = []      # (tag, Element) per open body element
+        self._line_starts = [0]
+        for index, char in enumerate(source):
+            if char == "\n":
+                self._line_starts.append(index + 1)
+        try:
+            self.feed(source)
+            self.close()
+        except Exception as exc:  # noqa: BLE001 - any parser failure fails closed
+            self.error = "%s: %s" % (type(exc).__name__, exc)
+
+    def _offset(self) -> int:
+        line, column = self.getpos()
+        return self._line_starts[line - 1] + column
+
+    def _ancestor(self):
+        for _tag, how in reversed(self._groups):
+            if how is not None:
+                return how
+        return None
+
+    def handle_starttag(self, tag, attrs):
+        self._start(tag, first_wins(attrs), closes=False)
+
+    def handle_startendtag(self, tag, attrs):
+        self._start(tag, first_wins(attrs), closes=True)
+
+    def _start(self, tag, attrs, closes):
+        if tag in GROUP_TAGS:
+            if not closes:
+                how = None
+                if "transform" in attrs:
+                    how = "an ancestor <g>/<svg> transform"
+                elif transform_carrier(attrs) is not None:
+                    how = "an ancestor <g>/<svg> style transform"
+                self._groups.append((tag, how))
+            return
+        if tag not in MARK_TAGS and tag not in BODY_TAGS:
+            return
+        element = Element(tag, attrs, self._offset(), self._ancestor())
+        if tag == "circle":
+            self.circles.append(element)
+            return
+        if tag == "text":
+            self.texts.append(element)
+        elif tag == "style":
+            self.styles.append(element)
+        else:
+            self.named.append(element)
+        if not closes:
+            self._open.append((tag, element))
+
+    def handle_endtag(self, tag):
+        stack = self._groups if tag in GROUP_TAGS else self._open if tag in BODY_TAGS else None
+        if stack is None:
+            return
+        # Pop back to the matching open tag - an unclosed inner element ends
+        # with its parent, as it does in the browser's tree. An unclosed
+        # transformed group is never popped, so it covers everything after it.
+        for index in range(len(stack) - 1, -1, -1):
+            if stack[index][0] == tag:
+                del stack[index:]
+                return
+
+    def handle_data(self, data):
+        if self._open:
+            # Innermost only: a <title> tooltip inside a <text> is not part of
+            # the rendered label. <tspan> is not tracked, so its text joins
+            # the enclosing <text>, as it renders.
+            self._open[-1][1].body += data
+
+
+def parse_document(source: str) -> _Scanner:
+    return _Scanner(source)
 
 
 def plain(body: str) -> str:
-    return html.unescape(TAG_RE.sub("", body)).strip()
+    """Character data as the parser delivered it: tags gone, entities resolved."""
+    return body.strip()
 
 
 def number(value):
@@ -306,9 +430,14 @@ def fit(points: list) -> tuple:
     return slope, median([c - slope * v for v, c in points])
 
 
-def named_text(source: str) -> str:
+def named_text(doc: _Scanner) -> str:
     """The accessible name and description, where a figure says what it is."""
-    return " ".join(plain(m.group("body")) for m in NAMED_RE.finditer(source)).casefold()
+    return " ".join(plain(element.body) for element in doc.named).casefold()
+
+
+def raw_dot_count(source: str) -> int:
+    """<circle> start tags declaring data-value in the raw text, comments blanked."""
+    return len(DECLARES_DOT_RE.findall(blank_comments(source)))
 
 
 def looks_like_beeswarm(path: Path, source: str) -> bool:
@@ -321,14 +450,21 @@ def looks_like_beeswarm(path: Path, source: str) -> bool:
     The circle restriction is the treaty line - `data-value` also appears on
     <text> axis ticks in the bubble contract (and this one), so matching the
     raw source would claim every shipped bubble file.
+
+    Two readings, each covering the other's blind spot, as in
+    verify-slopegraph.py: the raw text claims a circle whose broken quoting
+    keeps the parser from emitting it, and the parser claims one whose
+    data-value sits behind a quoted `>`, which the raw scan cannot see past
+    but the browser still draws.
     """
     if path.name.startswith("example-beeswarm"):
         return True
-    if DECLARES_VALUE_RE.search(source):
-        for match in CIRCLE_RE.finditer(source):
-            if DECLARES_VALUE_RE.search(match.group("attrs")):
-                return True
-    return "beeswarm" in named_text(source)
+    if raw_dot_count(source):
+        return True
+    doc = parse_document(source)
+    if any("data-value" in element.attrs for element in doc.circles):
+        return True
+    return "beeswarm" in named_text(doc)
 
 
 def transform_carrier(attrs: dict):
@@ -352,72 +488,25 @@ def transform_carrier(attrs: dict):
     return None
 
 
-def transformed_spans(source: str) -> list:
-    """(start, end, how) for each range enclosed by a transformed <g>/<svg>.
-
-    Element-level transforms are easy to see; an ancestor's is not, and shifts
-    everything inside it identically - exactly the change that leaves all
-    internal consistency intact while moving every mark on the page. Both
-    element carriers count on a group: the attribute and an inline style.
-    """
-    events = []
-    for match in GROUP_OPEN_RE.finditer(source):
-        if match.group("selfclose"):
-            continue
-        attrs = attrs_of(match.group("attrs"))
-        how = None
-        if "transform" in attrs:
-            how = "an ancestor <g>/<svg> transform"
-        elif transform_carrier(attrs) is not None:
-            how = "an ancestor <g>/<svg> style transform"
-        events.append((match.start(), 0, how))
-    for match in GROUP_CLOSE_RE.finditer(source):
-        events.append((match.start(), 1, None))
-    # Sort on (offset, kind) only. The third field is a message now, so a
-    # bare sort() would compare a str against None to break a tie and raise.
-    events.sort(key=lambda event: (event[0], event[1]))
-    stack, spans = [], []
-    for position, kind, how in events:
-        if kind == 0:
-            stack.append((position, how))
-        elif stack:
-            start, was_transformed = stack.pop()
-            if was_transformed:
-                spans.append((start, position, was_transformed))
-    # An unclosed transformed group covers everything after it.
-    for start, was_transformed in stack:
-        if was_transformed:
-            spans.append((start, len(source), was_transformed))
-    return spans
-
-
-def parse_dots(source: str, findings: list, name: str) -> list:
+def parse_dots(doc: _Scanner, source: str, findings: list, name: str) -> list:
     """Dot circles, with anything unparseable reported rather than dropped."""
     dots = []
-    for match in CIRCLE_RE.finditer(source):
-        raw = match.group("attrs")
-        attrs = attrs_of(raw)
+    parsed_count = 0
+    for element in doc.circles:
+        attrs = element.attrs
+        offset = element.offset
         if "data-value" not in attrs:
             # A <circle> with no data-value is scenery - a paper underlay, a
-            # legend swatch, a dot-grid cell - and skipping it is correct. But
-            # one whose raw text DOES declare data-value and still parsed to
-            # nothing is markup this checker cannot read, and dropping it
-            # silently is how a lie ships.
-            if DECLARES_VALUE_RE.search(raw):
-                findings.append(
-                    "%s:%d: a <circle> declares data-value but its attributes "
-                    "could not be parsed — the checker will not silently skip "
-                    "markup it cannot read. Use plain quoted attributes"
-                    % (name, line_of(source, match.start()))
-                )
+            # legend swatch, a dot-grid cell - and skipping it is correct.
             continue
+        parsed_count += 1
         missing = [key for key in ("cx", "cy", "r") if key not in attrs]
         if missing:
             findings.append(
                 "%s:%d: a dot declares data-value=%r but is missing %s — a dot "
                 "must declare its value and all three drawn quantities or it "
                 "cannot be verified"
-                % (name, line_of(source, match.start()), attrs["data-value"],
+                % (name, line_of(source, offset), attrs["data-value"],
                    ", ".join(missing))
             )
             continue
@@ -426,7 +515,7 @@ def parse_dots(source: str, findings: list, name: str) -> list:
             findings.append(
                 "%s:%d: a dot has a value or coordinate that is not a finite "
                 "number — cannot verify its position"
-                % (name, line_of(source, match.start()))
+                % (name, line_of(source, offset))
             )
             continue
         if parsed[3] <= 0:
@@ -434,75 +523,80 @@ def parse_dots(source: str, findings: list, name: str) -> list:
                 "%s:%d: a dot has r=%g — a dot with no area is a mark the "
                 "reader cannot see, and an invisible item is an omission the "
                 "source line never counted"
-                % (name, line_of(source, match.start()), parsed[3])
+                % (name, line_of(source, offset), parsed[3])
             )
             continue
         accent = bool(ACCENT_RE.search(attrs.get("stroke", "")))
         dots.append(Dot(parsed[0], parsed[1], parsed[2], parsed[3],
                         attrs.get("data-name"), attrs.get("fill"),
-                        accent, match.start()))
+                        accent, offset))
+    # A <circle> whose raw text declares data-value but which the parser
+    # never emitted with one is markup the browser reads differently from
+    # its author - most often a broken quote that swallows the tag. Dropping
+    # it silently is how a lie ships, so the shortfall is a finding.
+    declared = raw_dot_count(source)
+    if declared > parsed_count:
+        findings.append(
+            "%s: %d <circle> tag(s) declare data-value in the raw text but %d "
+            "could not be parsed as dots — the checker will not silently skip "
+            "markup it cannot read. Check the quoting of every dot"
+            % (name, declared, declared - parsed_count)
+        )
     return dots
 
 
-def check_transforms(source: str, findings: list, name: str) -> None:
+def check_transforms(doc: _Scanner, source: str, findings: list, name: str) -> None:
     """No transform may move verified geometry or a bound label.
 
     Rejected rather than resolved, following verify-slopegraph.py: a partial
     implementation of the SVG transform stack is worse than an honest
     refusal, because it looks like coverage. All three carriers are held to
     that rule - the `transform` attribute, an inline `style="transform: ..."`,
-    and a rule in a <style> block - because a gate that closes one of three
-    doorways guards nothing at all.
+    and a rule in a <style> block - on the element and on every <g>/<svg>
+    above it, because a gate that closes one of three doorways guards nothing
+    at all. Every attribute is read as the parser tokenized it, so an unquoted
+    or single-quoted transform, or one behind a quoted `>`, is still read.
     """
-    spans = transformed_spans(source)
 
-    def enclosing(offset):
-        for start, end, how in spans:
-            if start <= offset <= end:
-                return how
-        return None
-
-    def report(offset, what, how):
+    def report(element, what, how):
         findings.append(
             "%s:%d: %s carries %s — this checker validates raw cx/cy/r and x/y "
             "attributes, so a transform moves the rendered mark away from the "
             "number it was checked against. Bake the offset into the "
-            "coordinates instead" % (name, line_of(source, offset), what, how)
+            "coordinates instead" % (name, line_of(source, element.offset), what, how)
         )
 
-    def check_element(offset, attrs, what):
-        how = transform_carrier(attrs)
+    def check_element(element, what):
+        how = transform_carrier(element.attrs)
         if how is None:
-            how = enclosing(offset)
+            how = element.ancestor
         if how is not None:
-            report(offset, what, how)
+            report(element, what, how)
 
-    for match in CIRCLE_RE.finditer(source):
-        attrs = attrs_of(match.group("attrs"))
-        if "data-value" not in attrs:
+    for element in doc.circles:
+        if "data-value" not in element.attrs:
             continue
-        check_element(match.start(), attrs,
-                      "the dot for value %s" % attrs["data-value"])
+        check_element(element, "the dot for value %s" % element.attrs["data-value"])
 
-    for match in TEXT_RE.finditer(source):
-        attrs = attrs_of(match.group("attrs"))
+    for element in doc.texts:
+        attrs = element.attrs
         if "data-name" not in attrs and "data-tick" not in attrs:
             continue
         # Named for what it is: a tick and an outlier label fail this check
         # for the same reason but are fixed in different places.
         kind = "tick" if "data-tick" in attrs else "label"
-        check_element(match.start(), attrs, "a bound %s (%s)"
-                      % (kind, plain(match.group("body"))[:20]))
+        check_element(element, "a bound %s (%s)" % (kind, plain(element.body)[:20]))
 
-    for match in STYLE_RE.finditer(source):
-        found = CSS_MOVES_MARK_RE.search(match.group("body"))
+    for element in doc.styles:
+        found = CSS_MOVES_MARK_RE.search(element.body)
         if found:
             findings.append(
                 "%s:%d: a CSS `%s` declaration — this checker cannot tell "
                 "which marks it applies to, and one that positions verified "
                 "geometry invalidates every coordinate here. Remove it, or "
                 "bake the offset into the coordinates"
-                % (name, line_of(source, match.start("body") + found.start()),
+                % (name, line_of(source, element.offset)
+                   + element.body.count("\n", 0, found.start("prop")),
                    found.group("prop").lower())
             )
 
@@ -654,7 +748,8 @@ def check_focal(dots: list, findings: list, source: str, name: str) -> None:
         )
 
 
-def check_labels(dots: list, source: str, findings: list, name: str) -> None:
+def check_labels(dots: list, doc: _Scanner, source: str, findings: list,
+                 name: str) -> None:
     """Named dots and bound labels pair one-to-one and sit together."""
     named = [d for d in dots if d.name is not None]
     if len(named) > MAX_NAMED:
@@ -695,15 +790,15 @@ def check_labels(dots: list, source: str, findings: list, name: str) -> None:
         positions.pop(collided, None)
 
     seen = set()
-    for match in TEXT_RE.finditer(source):
-        attrs = attrs_of(match.group("attrs"))
+    for element in doc.texts:
+        attrs = element.attrs
         label = attrs.get("data-name")
         if label is None:
             continue
         if label in ambiguous:
             continue      # the collision is the finding; placement is moot
-        offset = match.start()
-        body = plain(match.group("body"))
+        offset = element.offset
+        body = plain(element.body)
         if label not in positions:
             findings.append(
                 "%s:%d: a label names dot %r, which no circle declares — a "
@@ -761,15 +856,16 @@ def check_labels(dots: list, source: str, findings: list, name: str) -> None:
             )
 
 
-def check_ticks(scale, source: str, findings: list, name: str) -> None:
+def check_ticks(scale, doc: _Scanner, source: str, findings: list,
+                name: str) -> None:
     """Bound value-axis ticks must print their value and sit on the dots' scale."""
     ticks = []
-    for match in TEXT_RE.finditer(source):
-        attrs = attrs_of(match.group("attrs"))
+    for element in doc.texts:
+        attrs = element.attrs
         axis = attrs.get("data-tick")
         if axis is None:
             continue
-        offset = match.start()
+        offset = element.offset
         if axis != "x":
             findings.append(
                 "%s:%d: a tick label has data-tick=%r — a beeswarm has one "
@@ -785,7 +881,7 @@ def check_ticks(scale, source: str, findings: list, name: str) -> None:
                 % (name, line_of(source, offset))
             )
             continue
-        body = plain(match.group("body"))
+        body = plain(element.body)
         shown, reason = printed_number(body)
         if shown is None:
             findings.append(
@@ -835,9 +931,17 @@ def check_ticks(scale, source: str, findings: list, name: str) -> None:
 
 def check_source(path: Path, raw: str) -> list:
     """Findings for one already-read document."""
-    source = blank_comments(raw)
+    source = raw
     findings: list = []
-    dots = parse_dots(source, findings, path.name)
+    doc = parse_document(source)
+    if doc.error is not None:
+        findings.append(
+            "%s: presents as a beeswarm but could not be parsed as HTML (%s) — "
+            "refusing to report OK on a file this checker could not read"
+            % (path.name, doc.error)
+        )
+        return findings
+    dots = parse_dots(doc, source, findings, path.name)
 
     distinct = len({d.value for d in dots})
     if len(dots) < 4 or distinct < 4:
@@ -865,14 +969,14 @@ def check_source(path: Path, raw: str) -> list:
                                        MAX_DOTS)
         )
 
-    check_transforms(source, findings, path.name)
+    check_transforms(doc, source, findings, path.name)
     scale = check_scale(dots, findings, source, path.name)
     check_overlap(dots, findings, source, path.name)
     check_radius(dots, findings, source, path.name)
     check_ink(dots, findings, source, path.name)
     check_focal(dots, findings, source, path.name)
-    check_labels(dots, source, findings, path.name)
-    check_ticks(scale, source, findings, path.name)
+    check_labels(dots, doc, source, findings, path.name)
+    check_ticks(scale, doc, source, findings, path.name)
     return findings
 
 

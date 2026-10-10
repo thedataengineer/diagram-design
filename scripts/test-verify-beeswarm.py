@@ -487,6 +487,56 @@ def run_cases(h: Harness) -> int:
                  "  </g>\n", TICKS),
         r"an ancestor <g>/<svg> style transform",
     )
+    # Attribute spelling. The browser applies a transform whether its value is
+    # unquoted, single-quoted, or follows a quoted `>` in an earlier
+    # attribute; a `[^>]*` tag regex that demanded quotes read none of these,
+    # and a dot slid 300px along the value axis reported OK.
+    shipped = SHIPPED[0].read_text(encoding="utf-8")
+    shipped_dot = '<circle data-value="52" cx="184" cy="230" r="4"'
+    h.check("the shipped mutation anchor is present", shipped_dot in shipped)
+    h.expect_finding(
+        "an unquoted transform on a shipped dot is rejected",
+        shipped.replace(shipped_dot, shipped_dot.replace(
+            "<circle ", "<circle transform=translate(300,0) ", 1), 1),
+        r"the dot for value 52 carries transform=",
+    )
+    h.expect_finding(
+        "a single-quoted transform on a shipped dot is rejected",
+        shipped.replace(shipped_dot, shipped_dot.replace(
+            "<circle ", "<circle transform='translate(300,0)' ", 1), 1),
+        r"the dot for value 52 carries transform=",
+    )
+    h.expect_finding(
+        "an unquoted transform on a dot is rejected",
+        document(swarm(23),
+                 dot(300, extra="transform=translate(300,0)"), TICKS),
+        r"the dot for value 300 carries transform=",
+    )
+    h.expect_finding(
+        "a transformed ancestor <g> behind a quoted `>` is still an ancestor",
+        document('  <g data-note=">" transform="translate(300 0)">\n', swarm(),
+                 "  </g>\n", TICKS),
+        r"an ancestor <g>/<svg> transform",
+    )
+    h.expect_finding(
+        "a dot's own transform behind a quoted `>` is still read",
+        document(swarm(23),
+                 dot(300, extra='data-note=">" transform="translate(300 0)"'),
+                 TICKS),
+        r"the dot for value 300 carries transform=",
+    )
+    h.expect_finding(
+        "an unquoted transform on an axis tick is rejected",
+        document(swarm(), tick(0),
+                 tick(400, extra="transform=translate(60,0)")),
+        r"a bound tick .* carries transform=",
+    )
+    h.expect_finding(
+        "an unquoted transform on a bound label is rejected",
+        document(swarm(23), dot(300, name="req-a"), TICKS,
+                 label("req-a", cx(300), extra="transform=translate(40,0)")),
+        r"a bound label .* carries transform=",
+    )
     h.expect_clean(
         "text-transform in an inline style is styling, not movement",
         document(swarm(23), dot(300, name="req-a"), TICKS,
@@ -568,10 +618,19 @@ def run_cases(h: Harness) -> int:
     )
 
     # ── Malformed markup: findings, never tracebacks, never silence ───────
+    # An unquoted value is legal HTML and is read as the browser reads it, so
+    # `data-value=broken` is a dot with an unreadable value, not an
+    # unparseable tag.
     h.expect_finding(
-        "a data-value circle whose attributes cannot be parsed is reported",
+        "an unquoted non-numeric data-value is read and reported as unreadable",
         document('  <circle data-value=broken cx="100" cy="230" r="4"/>\n',
                  swarm(), TICKS),
+        r"not a finite\s+number",
+    )
+    h.expect_finding(
+        "a data-value circle swallowed by a broken quote is reported, not skipped",
+        document(swarm(), TICKS,
+                 '  <circle data-value="300" cx=\'680" cy="230" r="4"/>\n'),
         r"could not be parsed",
     )
     h.expect_finding(

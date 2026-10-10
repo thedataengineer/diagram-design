@@ -725,6 +725,186 @@ def check_size_preset_surfaces(verify) -> None:
     print("OK size presets: every size-selection surface names the output-spec presets")
 
 
+def check_github_slugs(verify) -> None:
+    """Heading anchors follow GitHub's slugger, duplicate suffixes included."""
+    cases = (
+        ("Consultant special (2\u00d72 scenario matrix)", "consultant-special-22-scenario-matrix"),
+        ("\u00a7 URL", "-url"),
+        ("Inversion rule (light \u2194 dark)", "inversion-rule-light--dark"),
+        ("`--type` flag", "--type-flag"),
+        ("[Linked](other.md) heading", "linked-heading"),
+        ("snake_case stays", "snake_case-stays"),
+        ("\u65e5\u672c\u8a9e CJK", "\u65e5\u672c\u8a9e-cjk"),
+    )
+    for text, expected in cases:
+        slug = verify.github_slug(text)
+        if slug != expected:
+            raise AssertionError(f"slug of {text!r} is {slug!r}, expected {expected!r}")
+    anchors = verify.heading_anchors("# Same\n\n## Same\n\n### Same\n\n## Other\n")
+    if anchors != {"same", "same-1", "same-2", "other"}:
+        raise AssertionError(f"duplicate headings did not take -1/-2 suffixes: {anchors}")
+    anchors = verify.heading_anchors('<a id="pinned"></a>\n\n## Real\n')
+    if anchors != {"pinned", "real"}:
+        raise AssertionError(f"an explicit HTML anchor was not collected: {anchors}")
+    print("OK GitHub slugs: punctuation, symbols, code, links, and duplicate suffixes")
+
+
+# Every markdown surface a reader or agent follows links from. Spelled out here
+# rather than read from the verifier: a surface dropped from the verifier's own
+# list must fail a test, not shrink it.
+MARKDOWN_LINK_FIXTURE = {
+    "skills/diagram-design/SKILL.md": (
+        "# Skill\n\n"
+        "See [quadrant](references/type-quadrant.md#consultant-special-22-scenario-matrix), "
+        "[onboarding](references/onboarding.md#-url), and [self](#skill).\n\n"
+        "```\n[fenced](references/nowhere.md)\n```\n\n"
+        "Inline `[code](references/nowhere.md)` is not a link. "
+        "[web](https://example.com/x.md#y) is external.\n"
+    ),
+    "skills/diagram-design/references/type-quadrant.md": (
+        "# Quadrant\n\n## Consultant special (2\u00d72 scenario matrix)\n\n"
+        "## Notes\n\n## Notes\n\nBack to [onboarding](onboarding.md#notes).\n"
+    ),
+    "skills/diagram-design/references/onboarding.md": (
+        "# Onboarding\n\n## \u00a7 URL\n\n## Notes\n\n"
+        "Jump to [URL](#-url), [second notes](type-quadrant.md#notes-1), "
+        "and the [example](../assets/example-quadrant.html).\n"
+    ),
+    "skills/diagram-design/assets/example-quadrant.html": "<!doctype html>\n",
+    "commands/import-drawio.md": "Read [the reference](../skills/diagram-design/references/onboarding.md#notes).\n",
+    "prompts/import-drawio.md": "Read [the reference](../skills/diagram-design/references/onboarding.md).\n",
+    "README.md": "# Diagram Design\n\nSee [contributing](CONTRIBUTING.md#workflow) and [commands](commands/).\n",
+    "CONTRIBUTING.md": "# Contributing\n\n## Workflow\n\nBack to [README](README.md#diagram-design).\n",
+}
+
+
+def check_markdown_links(verify) -> None:
+    """Every relative link and anchor on a markdown surface must resolve."""
+    with tempfile.TemporaryDirectory(prefix="verify-docs-sync-links-") as temp_dir:
+        root = Path(temp_dir)
+        for relative, text in MARKDOWN_LINK_FIXTURE.items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+
+        errors = run_checks(root, verify.check_markdown_links)
+        if errors:
+            raise AssertionError(f"a fully linked tree failed: {errors}")
+
+        skill = "skills/diagram-design/SKILL.md"
+        quadrant = "skills/diagram-design/references/type-quadrant.md"
+        onboarding = "skills/diagram-design/references/onboarding.md"
+        # Each mutation is the only defect in the tree, so exactly one error.
+        defects = (
+            # The live SKILL.md:320 drift: "2x2" for a heading that slugs "22".
+            (skill, "#consultant-special-22-scenario-matrix", "#consultant-special-2x2-scenario-matrix",
+             f"{skill}:3 links to 'references/type-quadrant.md#consultant-special-2x2-scenario-matrix', "
+             f"which matches no heading in {quadrant}"),
+            # The live onboarding.md drift: "§ URL" slugs to "-url", not "url".
+            (onboarding, "[URL](#-url)", "[URL](#url)",
+             f"{onboarding}:7 links to '#url', which matches no heading in {onboarding}"),
+            # A duplicate heading only takes -1; -2 does not exist.
+            (onboarding, "type-quadrant.md#notes-1", "type-quadrant.md#notes-2",
+             f"{onboarding}:7 links to 'type-quadrant.md#notes-2', which matches no heading in {quadrant}"),
+            # Reference to reference.
+            (quadrant, "(onboarding.md#notes)", "(onbaording.md#notes)",
+             f"{quadrant}:9 links to 'onbaording.md#notes', which does not exist"),
+            (onboarding, "../assets/example-quadrant.html", "../assets/example-quadrent.html",
+             f"{onboarding}:7 links to '../assets/example-quadrent.html', which does not exist"),
+            ("commands/import-drawio.md", "onboarding.md#notes", "onboarding.md#nope",
+             "commands/import-drawio.md:1 links to '../skills/diagram-design/references/onboarding.md#nope', "
+             f"which matches no heading in {onboarding}"),
+            ("prompts/import-drawio.md", "references/onboarding.md", "references/missing.md",
+             "prompts/import-drawio.md:1 links to '../skills/diagram-design/references/missing.md', "
+             "which does not exist"),
+            ("README.md", "CONTRIBUTING.md#workflow", "CONTRIBUTING.md#flow",
+             "README.md:3 links to 'CONTRIBUTING.md#flow', which matches no heading in CONTRIBUTING.md"),
+            ("CONTRIBUTING.md", "(README.md#diagram-design)", "(READ.md)",
+             "CONTRIBUTING.md:5 links to 'READ.md', which does not exist"),
+            (skill, "[self](#skill)", "[self](#skil)",
+             f"{skill}:3 links to '#skil', which matches no heading in {skill}"),
+        )
+        for relative, old, new, expected in defects:
+            path = root / relative
+            original = mutate(path, old, new)
+            try:
+                errors = run_checks(root, verify.check_markdown_links)
+            finally:
+                path.write_bytes(original)
+            if errors != [expected]:
+                raise AssertionError(f"{relative}: {new!r} was not reported as {expected!r}: {errors}")
+    print("OK markdown links: every relative link and anchor across the doc surfaces resolves")
+
+
+def check_skill_count_prose(verify) -> None:
+    """SKILL.md prose that states the visual-type count must equal the table."""
+    count = verify.VISUAL_TYPE_COUNT
+    words = verify.number_words(count)
+    good = (
+        f"{words.capitalize()} visual types. Patterns describe behavior.\n\n"
+        f"Use for any of the {count} visual types (\u00a73).\n\n"
+        f"### Visual-type guide ({count})\n\n"
+        "Draw 2 node types and 3 arrow types.\n"
+    )
+    errors: list[str] = []
+    verify.check_skill_count_prose(errors, good)
+    if errors:
+        raise AssertionError(f"SKILL.md count prose matching the table failed: {errors}")
+    stale = count - 1
+    for old, new in (
+        (f"{words.capitalize()} visual", f"{verify.number_words(stale).capitalize()} visual"),
+        (f"any of the {count} visual", f"any of the {stale} visual"),
+        (f"guide ({count})", f"guide ({stale})"),
+    ):
+        errors = []
+        verify.check_skill_count_prose(errors, good.replace(old, new, 1))
+        if len(errors) != 1 or f"says {stale}" not in errors[0] or str(count) not in errors[0]:
+            raise AssertionError(f"stale SKILL.md count {new!r} was not reported: {errors}")
+    errors = []
+    verify.check_skill_count_prose(errors, verify.SKILL.read_text(encoding="utf-8"))
+    if errors:
+        raise AssertionError(f"shipped SKILL.md count prose failed: {errors}")
+    print("OK SKILL.md count prose: numerals and number words match VISUAL_TYPE_COUNT")
+
+
+def check_bare_asset_citations(verify) -> None:
+    """`example-*.html` / `template*.html` named without assets/ must exist too."""
+    with tempfile.TemporaryDirectory(prefix="verify-docs-sync-bare-") as temp_dir:
+        skill = Path(temp_dir)
+        (skill / "assets").mkdir()
+        (skill / "references").mkdir()
+        (skill / "assets/example-real.html").write_text("", encoding="utf-8")
+        (skill / "assets/template-dark.html").write_text("", encoding="utf-8")
+        (skill / "SKILL.md").write_text("Start from `template-dark.html`.\n", encoding="utf-8")
+        reference = skill / "references/type-sample.md"
+        reference.write_text(
+            "Shipped as `example-real.html`; not `docs/example-elsewhere.html`.\n",
+            encoding="utf-8",
+        )
+        errors: list[str] = []
+        verify.check_reference_asset_links(errors, skill)
+        if errors:
+            raise AssertionError(f"existing bare asset citations failed: {errors}")
+        for name, text, expected in (
+            ("type-sample.md", "See `example-gone.html`.\n",
+             "type-sample.md cites missing asset 'example-gone.html'"),
+            ("type-sample.md", "Copy template-gone.html first.\n",
+             "type-sample.md cites missing asset 'template-gone.html'"),
+        ):
+            reference.write_text(text, encoding="utf-8")
+            errors = []
+            verify.check_reference_asset_links(errors, skill)
+            if errors != [expected]:
+                raise AssertionError(f"bare citation {text!r} was not reported: {errors}")
+        reference.write_text("", encoding="utf-8")
+        (skill / "SKILL.md").write_text("Start from `template-light.html`.\n", encoding="utf-8")
+        errors = []
+        verify.check_reference_asset_links(errors, skill)
+        if errors != ["SKILL.md cites missing asset 'template-light.html'"]:
+            raise AssertionError(f"a SKILL.md bare citation was not reported: {errors}")
+    print("OK bare asset citations: example-*.html and template*.html names exist in assets/")
+
+
 def check_architecture_delta_discovery(verify) -> None:
     """A topology comparison must remain discoverable apart from Architecture."""
     shipped = verify.SKILL.read_text(encoding="utf-8")
@@ -1857,13 +2037,18 @@ diagram-design/
     check_size_preset_surfaces(verify)
     check_split_type_ramp(verify)
     check_split_routes(verify)
+    check_github_slugs(verify)
+    check_markdown_links(verify)
+    check_skill_count_prose(verify)
+    check_bare_asset_citations(verify)
 
     print(
         "PASS: docs sync checks references, style-guide anchors, asset citations, "
         "strict-bundler packaging, "
         "routing surfaces, size-preset surfaces, Factory install contract, type-count routing, High-Level invariants, "
         "font-link parity, the Cyrillic title fallback order, the type-ramp contract, "
-        "split routing, and gallery guards (parent/variant model, contiguous ordinals)"
+        "split routing, markdown links and GitHub-slug anchors, SKILL.md count prose, "
+        "bare asset citations, and gallery guards (parent/variant model, contiguous ordinals)"
     )
     return 0
 

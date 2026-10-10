@@ -46,6 +46,10 @@
           <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
             <circle cx="1" cy="1" r="0.9" fill="rgba(45,49,66,0.10)"/>
           </pattern>
+          <!-- Single-ended axis marker: each axis points toward its high end -->
+          <marker id="axis-end" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+            <polygon points="0 0, 9 3.5, 0 7" fill="rgba(45,49,66,0.45)"/>
+          </marker>
         </defs>
 
         <rect width="100%" height="100%" fill="#f5f5f5"/>
@@ -54,15 +58,13 @@
         <!-- Quadrant backgrounds (very subtle, only coral on DO FIRST) -->
         <rect x="120" y="80" width="380" height="170" fill="rgba(235,108,54,0.03)"/>
 
-        <!-- Axis cross -->
-        <line x1="120" y1="250" x2="880" y2="250" stroke="rgba(45,49,66,0.45)" stroke-width="1"/>
-        <line x1="500" y1="80" x2="500" y2="420" stroke="rgba(45,49,66,0.45)" stroke-width="1"/>
+        <!-- Axis cross — single-ended; each arrow points toward the high end -->
+        <line x1="120" y1="250" x2="880" y2="250" stroke="rgba(45,49,66,0.45)" stroke-width="1" marker-end="url(#axis-end)"/>
+        <line x1="500" y1="420" x2="500" y2="80" stroke="rgba(45,49,66,0.45)" stroke-width="1" marker-end="url(#axis-end)"/>
 
-        <!-- Axis end labels -->
-        <text x="880" y="266" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end" letter-spacing="0.14em">HIGH EFFORT →</text>
-        <text x="120" y="266" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">← LOW EFFORT</text>
-        <text x="512" y="80" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">↑ HIGH IMPACT</text>
-        <text x="512" y="432" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">↓ LOW IMPACT</text>
+        <!-- Axis labels — one word at each arrow tip. No glyphs, no HIGH / LOW. -->
+        <text x="892" y="250" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="start" dominant-baseline="middle" letter-spacing="0.18em">EFFORT</text>
+        <text x="500" y="68" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.18em">IMPACT</text>
 
         <!-- Quadrant corner labels -->
         <text x="140" y="104" fill="#eb6c36" font-size="9" font-family="'Geist Mono', monospace" letter-spacing="0.18em" font-weight="600">DO FIRST</text>
@@ -120,8 +122,8 @@
         <p>A 2×2 with four coloured quadrants is a poster, not a decision tool. Reserving coral for the single item you commit to tomorrow makes the matrix actually prioritise.</p>
       </div>
       <div class="card">
-        <div class="card-header"><span class="card-dot ink"></span><h3>Axes labelled at ends</h3></div>
-        <ul><li>HIGH / LOW at the extremes</li><li>Arrows show direction</li><li>No labels at midpoints</li><li>The cross is 1px ink, not a box</li></ul>
+        <div class="card-header"><span class="card-dot ink"></span><h3>Axes labelled at the tips</h3></div>
+        <ul><li>One word at each arrow tip</li><li>No arrow glyphs, no HIGH / LOW</li><li>No labels at midpoints</li><li>The cross is 1px ink, not a box</li></ul>
       </div>
       <div class="card">
         <div class="card-header"><span class="card-dot muted"></span><h3>Empty BR isn't wasted</h3></div>

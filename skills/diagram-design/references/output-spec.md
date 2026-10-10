@@ -177,10 +177,10 @@ How much of the source survives. This is a *count* dial — it governs how many 
 | Level | Nodes | Edges | Sublabels | What survives |
 |---|---|---|---|---|
 | `faithful` (詳細) | ≤24, zoned | ≤32 | every port, protocol, version | Every distinct component in the source. Only exact duplicates merge. |
-| `balanced` (default) | ≤12 | ≤16 | technical sublabel on ≤4 nodes | Components that carry the story; leaf clusters collapse to one node each. |
+| `balanced` (default) | ≤9 | ≤12 | technical sublabel on ≤4 nodes | Components that carry the story; leaf clusters collapse to one node each. |
 | `simplified` (簡略) | ≤7 | ≤9 | none | Capabilities and their sequence. Infrastructure disappears. |
 
-`balanced` and `simplified` sit inside the standard complexity budget (SKILL.md §7). **`faithful` deliberately exceeds it** — that's the trade, and it comes with conditions:
+Node and edge counts are **drawn** counts, not source counts: a source of any size is reduced by the degrade ladder below until it fits. The extractors' `budget: nodes OVER (max 9), edges OVER (max 12)` line measures the source against this same §7 budget, so OVER means the ladder has work to do. `balanced` and `simplified` sit inside the standard complexity budget (SKILL.md §7); `balanced` *is* that budget. **`faithful` deliberately exceeds it** — that's the trade, and it comes with conditions:
 
 1. **Zoning is mandatory.** Above 9 nodes, every node belongs to a labeled zone (2–4 zones, hairline-bordered, `paper-2` fill, mono uppercase zone label at top-left). An unzoned 20-node diagram is a wiring diagram, not a schematic.
 2. **Connector rules don't relax.** SKILL.md §6 rules 1–5 still apply at 24 nodes. If you can't route it without overlaps, you're over the real ceiling — split.

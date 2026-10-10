@@ -24,7 +24,7 @@ Use **Org Chart** instead of **Tree** when the nodes are people, agents, teams, 
 - **Approval gate:** security treatment, separate from reporting hierarchy.
 
 ## Complexity budget
-- Max visible org nodes: 12. If more, create an overview org chart plus separate detail charts per pod.
+- Max visible org nodes: 12, a named exception to the universal 9 ([layout-budget.md](layout-budget.md#complexity-budget-per-diagram)). If more, create an overview org chart plus separate detail charts per pod.
 - Max depth: 4 tiers.
 - Max direct reports under one parent: 5. If there are more, introduce grouping nodes.
 - Max coral nodes: 1. The org chart's job is clarity, not highlighting everything.

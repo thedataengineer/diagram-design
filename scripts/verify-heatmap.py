@@ -18,6 +18,11 @@ Four invariants:
    must be non-decreasing: a lighter cell at a higher value inverts the visual
    scale and reverses every comparison. Cells with the same value must have the
    same opacity (tolerance ±0.03 to absorb floating-point representation).
+   Each value is compared with the highest opacity of EVERY lower value, not
+   just its predecessor, so sub-tolerance steps cannot accumulate into a
+   falling ramp. A cell's opacity is its rendered ink: the rgba() alpha times
+   any `fill-opacity` and `opacity` on the cell, as attributes or inline
+   `style` declarations.
 
 3. ONE FOCAL MAX — at most one cell carries data-focal="true" or uses accent
    fill (R >= 200, G <= 150, B <= 100). The focal accent is an editorial marker
@@ -105,8 +110,73 @@ def _length_px(raw: str | None, field: str, errors: list[str] | None) -> float |
 
 
 def _attr(attrs_str: str, name: str) -> str | None:
-    m = re.search(r"\b" + re.escape(name) + r'\s*=\s*"([^"]*)"', attrs_str)
-    return m.group(1) if m else None
+    """First value of attribute `name`, double-, single- or un-quoted.
+
+    The name must not be preceded by a name character or a hyphen, so asking
+    for `opacity` never reads `fill-opacity`, and `col` never reads `data-col`.
+    """
+    m = re.search(
+        r"(?<![\w:-])" + re.escape(name)
+        + r"""\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))""",
+        attrs_str,
+    )
+    if not m:
+        return None
+    return next(group for group in m.groups() if group is not None)
+
+
+STYLE_OPACITY_RE = re.compile(
+    r"(?:^|;)\s*(?P<prop>fill-opacity|opacity)\s*:\s*(?P<value>[^;]*)",
+    re.IGNORECASE,
+)
+
+
+def _opacity_factor(raw: str | None) -> float | None:
+    """Parse an opacity value (number or percentage) clamped to [0, 1].
+
+    None means unparseable; callers treat that as an unreadable opacity rather
+    than silently as 1.
+    """
+    if raw is None:
+        return 1.0
+    value = raw.strip().removesuffix("!important").strip()
+    try:
+        if value.endswith("%"):
+            factor = float(value[:-1]) / 100.0
+        else:
+            factor = float(value)
+    except ValueError:
+        return None
+    if not math.isfinite(factor):
+        return None
+    return min(1.0, max(0.0, factor))
+
+
+def _cell_opacity_multiplier(attrs_str: str) -> float | None:
+    """Product of every per-cell opacity that attenuates the rgba fill alpha.
+
+    The rendered ink of a cell is alpha × fill-opacity × opacity, where each
+    factor may be a presentation attribute or an inline style declaration (the
+    style declaration wins over the attribute for the same property, as in the
+    browser). Reading the rgba alpha alone lets `fill-opacity="0.1"` blank a
+    high-value cell while the checker still sees its declared alpha.
+    """
+    factors = {
+        "fill-opacity": _attr(attrs_str, "fill-opacity"),
+        "opacity": _attr(attrs_str, "opacity"),
+    }
+    style = _attr(attrs_str, "style")
+    if style:
+        style = re.sub(r"/\*.*?\*/", " ", style, flags=re.DOTALL)
+        for m in STYLE_OPACITY_RE.finditer(style):
+            factors[m.group("prop").lower()] = m.group("value")
+    product = 1.0
+    for raw in factors.values():
+        factor = _opacity_factor(raw)
+        if factor is None:
+            return None
+        product *= factor
+    return product
 
 
 def _is_accent(r: int, g: int, b: int) -> bool:
@@ -280,6 +350,11 @@ def parse_cells(source: str, errors: list[str] | None = None) -> list[dict]:
                     opacity = None
                 elif _is_accent(r_ch, g_ch, b_ch):
                     focal = True
+        if opacity is not None:
+            multiplier = _cell_opacity_multiplier(attrs_str)
+            # An unparseable fill-opacity/opacity leaves the rendered ink
+            # unknown, which fails closed as "no parseable opacity".
+            opacity = None if multiplier is None else opacity * multiplier
 
         cells.append(
             {
@@ -426,7 +501,7 @@ def check_file(path: Path) -> list[str]:
             for c in opaque_missing:
                 errors.append(
                     f"{path.name}: non-focal cell ({c['row']}, {c['col']}) "
-                    "has no parseable rgba fill — every non-focal cell must "
+                    "has no parseable rgba fill (or an unparseable fill-opacity/opacity) — every non-focal cell must "
                     "declare its opacity through rgba(R,G,B,opacity)"
                 )
 
@@ -446,22 +521,27 @@ def check_file(path: Path) -> list[str]:
                     "every cell with the same value must use the same fill opacity"
                 )
 
-        # Across values, mean opacity must be non-decreasing.
+        # Across values, mean opacity must be non-decreasing. Each value is
+        # compared with the HIGHEST opacity any lower value reached, not just
+        # its predecessor: a predecessor-only comparison lets sub-tolerance
+        # steps accumulate, so a ramp falling 0.60 → 0.04 in 0.02 steps passed.
+        # TOLERANCE absorbs rendering noise against that running maximum only.
         sorted_vals = sorted(by_value.keys())
-        prev_opacity = -1.0
-        prev_val = None
+        max_opacity = -1.0
+        max_val = None
         for val in sorted_vals:
             mean_opacity = sum(by_value[val]) / len(by_value[val])
-            if mean_opacity < prev_opacity - TOLERANCE:
+            if mean_opacity < max_opacity - TOLERANCE:
                 errors.append(
-                    f"{path.name}: value {val} has mean fill opacity "
-                    f"{mean_opacity:.3f}, which is less than value "
-                    f"{prev_val}'s opacity {prev_opacity:.3f}; "
+                    f"{path.name}: value {val:g} has mean fill opacity "
+                    f"{mean_opacity:.3f}, which is less than lower value "
+                    f"{max_val:g}'s opacity {max_opacity:.3f}; "
                     "the fill ramp must be non-decreasing — higher values "
-                    "must use >= opacity than lower values"
+                    "must use >= opacity than every lower value"
                 )
-            prev_opacity = mean_opacity
-            prev_val = val
+            if mean_opacity > max_opacity:
+                max_opacity = mean_opacity
+                max_val = val
 
     # Require focal cell value text to maintain WCAG AA against the rendered focal fill.
     # The fill is composited against the heatmap canvas background, which is light paper in

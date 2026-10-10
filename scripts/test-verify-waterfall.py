@@ -188,6 +188,52 @@ def main() -> int:
             '    [data-role="delta"] { transform: translateY(80px); }\n  </style>',
             "CSS 'transform' declaration",
         ),
+        # Attribute spelling: the browser applies a transform whether its value
+        # is single-quoted, unquoted, or follows a quoted `>` in an earlier
+        # attribute. A double-quote-only `[^>]*` reader saw none of these, and
+        # the Headcount bridge moved 120px down still reported OK.
+        (
+            "single-quoted element transform: the browser still moves the bar",
+            '<rect x="256" y="131" width="96" height="61" fill="rgba(79,93,117,0.15)" stroke="#4f5d75"',
+            '<rect transform=\'translate(0,120)\' x="256" y="131" width="96" height="61" fill="rgba(79,93,117,0.15)" stroke="#4f5d75"',
+            "waterfall bar carries transform",
+        ),
+        (
+            "unquoted element transform: the browser still moves the bar",
+            '<rect x="256" y="131" width="96" height="61" fill="rgba(79,93,117,0.15)" stroke="#4f5d75"',
+            '<rect transform=translate(0,120) x="256" y="131" width="96" height="61" fill="rgba(79,93,117,0.15)" stroke="#4f5d75"',
+            "waterfall bar carries transform",
+        ),
+        (
+            "unquoted carry transform: the connector is drawn at another level",
+            '<line x1="352" y1="131" x2="400" y2="131"',
+            '<line transform=translate(0,40) x1="352" y1="131" x2="400" y2="131"',
+            "waterfall carry carries transform",
+        ),
+        (
+            "quoted > before an ancestor transform: the group still moves the bar",
+            '<rect x="256" y="131" width="96" height="61" fill="rgba(79,93,117,0.15)" stroke="#4f5d75" stroke-width="1" data-role="delta" data-value="+64" data-name="Headcount"/>',
+            '<g data-note=">" transform="translate(0 120)"><rect x="256" y="131" width="96" height="61" fill="rgba(79,93,117,0.15)" stroke="#4f5d75" stroke-width="1" data-role="delta" data-value="+64" data-name="Headcount"/></g>',
+            "ancestor transform",
+        ),
+        (
+            "single-quoted bar attributes: the bar is read, not silently dropped",
+            'data-role="delta" data-value="+64" data-name="Headcount"',
+            "data-role='delta' data-value='+70' data-name='Headcount'",
+            "the walk arrives at 242",
+        ),
+        (
+            "broken quote: a bar whose tag is swallowed is reported, not dropped",
+            '<rect x="256" y="131" width="96" height="61" fill="rgba(79,93,117,0.15)" stroke="#4f5d75"',
+            '<rect x=\'256" y="131" width="96" height="61" fill="rgba(79,93,117,0.15)" stroke="#4f5d75"',
+            "could not be parsed as bars",
+        ),
+        (
+            "transformed value label: a moved label no longer prints at its bar",
+            '<text x="304" y="123" fill="#4f5d75"',
+            '<text transform=translate(0,120) x="304" y="123" fill="#4f5d75"',
+            "no printed label states its value +64",
+        ),
         (
             "second accent bar: the focal treatment repeats",
             '<rect x="256" y="131" width="96" height="61" fill="rgba(79,93,117,0.15)" stroke="#4f5d75"',
