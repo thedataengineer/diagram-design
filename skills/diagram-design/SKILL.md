@@ -157,7 +157,7 @@ These mark "AI slop" schematics of any type:
 | Vertical `writing-mode` text on arrows | Unreadable |
 | 3 equal-width summary cards as default | Generic grid — vary widths |
 | Shadow on any element | Shadows are out. Borders are in. |
-| `rounded-2xl` on boxes | Max radius 6–10px or none |
+| `rounded-2xl` on boxes | Max radius 8px or none (flowchart ovals excepted) |
 | Coral on every "important" node | Coral is 1–2 editorial accents, not a signaling system |
 | Reproducing Mermaid's renderer layout | Imports automatic spacing and routing instead of making an editorial layout |
 | Any breach of the six §6 connector rules | Automatic fail: diagonal slants, labels touching their stroke, masks clipped by a later node, overlapping paths, shared attach points, transit behind a non-endpoint box |
@@ -288,7 +288,7 @@ Run before producing any diagram.
 - [ ] **§6 rule 4:** a distinct attach point per connector on a shared edge, 12px or more apart, none hiding another?
 - [ ] **§6 rule 5:** no transit behind a non-endpoint box, except the unavoidable case (dashed, label at the visible end)?
 - [ ] **§6 rule 6:** no label mask overlapping a node drawn after it? (From a repository checkout, run `python3 <repo-root>/scripts/verify-geometry.py <file>`.)
-- [ ] Every arrow label has an opaque `fill="#f5f5f5"` rect behind it?
+- [ ] Every arrow label has an opaque rect filled with the paper color (`#f5f5f5` light, `#2d3142` dark, or the skin's paper) behind it?
 - [ ] Legend is a horizontal bottom strip, not floating?
 - [ ] No vertical `writing-mode` text?
 - [ ] `viewBox` expanded for the legend strip (~60px)?

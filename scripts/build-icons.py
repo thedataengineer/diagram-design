@@ -183,7 +183,10 @@ def fetch(url: str) -> str | None:
             return r.read().decode("utf-8")
     except urllib.error.HTTPError:
         return None
-    except urllib.error.URLError as e:
+    # URLError covers connect failures; a stalled read raises TimeoutError
+    # (socket.timeout on 3.9) and a dropped connection ConnectionError, which
+    # are plain OSErrors. All of them mean "no icon from this source".
+    except (urllib.error.URLError, OSError) as e:
         print(f"  network error for {url}: {e}", file=sys.stderr)
         return None
 

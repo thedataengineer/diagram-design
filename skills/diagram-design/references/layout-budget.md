@@ -14,6 +14,7 @@ Routed from SKILL.md §7 and §8. SKILL.md keeps the grid rule in one line, the 
 | Gap between nodes | 20, 24, 32, 40, 48 |
 | Padding inside boxes | 8, 12, 16 |
 | Border radius | 4, 6, 8 |
+| Small-mark radius | 2 (type tags, label masks), 3 (legend swatches) |
 
 ### Complexity budget (per diagram)
 

@@ -21,7 +21,7 @@ jobs:
 
     steps:
       - name: Checkout repository history
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         env:
           GIT_CONFIG_COUNT: "1"
           GIT_CONFIG_KEY_0: "core.autocrlf"
@@ -31,12 +31,12 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "22"
 
@@ -78,12 +78,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Set up Python 3.9
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.9"
 
@@ -104,7 +104,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         env:
           GIT_CONFIG_COUNT: "1"
           GIT_CONFIG_KEY_0: "core.autocrlf"
@@ -113,7 +113,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -151,6 +151,11 @@ jobs:
         if: always()
         id: devicon
         run: python scripts/test-build-icons-devicon.py
+
+      - name: Verify icon fetch failure handling
+        if: always()
+        id: icon_fetch
+        run: python scripts/test-build-icons-fetch.py
 
       - name: Verify mojibake repair utility
         if: always()
@@ -521,6 +526,7 @@ jobs:
           echo "| Shipped Motion HTML | ${{ steps.shipped_motion.outcome == 'success' && '✅ Passed' || (steps.shipped_motion.outcome == 'skipped' && '⏭️ Skipped' || '❌ Failed') }} |" >> $GITHUB_STEP_SUMMARY
           echo "| URL SVG Normalization | ${{ steps.url_icons.outcome == 'success' && '✅ Passed' || (steps.url_icons.outcome == 'skipped' && '⏭️ Skipped' || '❌ Failed') }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Devicon Normalization | ${{ steps.devicon.outcome == 'success' && '✅ Passed' || (steps.devicon.outcome == 'skipped' && '⏭️ Skipped' || '❌ Failed') }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Icon Fetch Failures | ${{ steps.icon_fetch.outcome == 'success' && '✅ Passed' || (steps.icon_fetch.outcome == 'skipped' && '⏭️ Skipped' || '❌ Failed') }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Mojibake Repair Utility | ${{ steps.mojibake.outcome == 'success' && '✅ Passed' || (steps.mojibake.outcome == 'skipped' && '⏭️ Skipped' || '❌ Failed') }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Color Palette & Skin Linter | ${{ steps.skin.outcome == 'success' && '✅ Passed' || (steps.skin.outcome == 'skipped' && '⏭️ Skipped' || '❌ Failed') }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Quantitative Polar Chart | ${{ steps.polar.outcome == 'success' && '✅ Passed' || (steps.polar.outcome == 'skipped' && '⏭️ Skipped' || '❌ Failed') }} |" >> $GITHUB_STEP_SUMMARY

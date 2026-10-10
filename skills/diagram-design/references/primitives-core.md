@@ -99,7 +99,7 @@ These six rules are **non-negotiable**. Run the pre-output checklist (SKILL.md Â
 Every arrow label needs an opaque rect behind it. Without one it bleeds through the line. **And the label must sit with a visible gap above the connector â€” never on top of it.**
 
 ```svg
-<!-- Mask sits 14px above the arrow (8px text height + 6px gap). Stroke is at ARROW_Y. -->
+<!-- 12px mask spans ARROW_Y-20 to ARROW_Y-8: an 8px gap above the stroke at ARROW_Y. -->
 <rect x="MID_X-18" y="ARROW_Y-20" width="36" height="12" rx="2" fill="#f5f5f5"/>
 <text x="MID_X" y="ARROW_Y-11" fill="#7a8399" font-size="8"
       font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">WRITE</text>

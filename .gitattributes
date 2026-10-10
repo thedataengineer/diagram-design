@@ -2,3 +2,8 @@
 # and in every checkout, whatever core.autocrlf says, so the measured size
 # is the committed size.
 skills/diagram-design/SKILL.md text eol=lf
+
+# Everything else text is LF in the repository and in every checkout, too.
+# Generators (build-icons.py, the example builders) write LF, so a CRLF blob
+# would turn every regeneration into a whole-file diff.
+* text=auto eol=lf

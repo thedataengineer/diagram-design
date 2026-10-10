@@ -12,7 +12,7 @@ To generate your own from a website URL, see [`onboarding.md`](onboarding.md).
 
 ### Semantic roles
 
-Every token is referred to by **semantic role**, not by its hex value. Type references (`type-*.md`) and SKILL.md say `accent`, not `#f7591f`.
+Every token is referred to by **semantic role**, not by its hex value. Type references (`type-*.md`) and SKILL.md say `accent`, not `#eb6c36`.
 
 | Role | Purpose | Default (light) | Default (dark) |
 |---|---|---|---|
@@ -30,11 +30,11 @@ Every token is referred to by **semantic role**, not by its hex value. Type refe
 
 > **Brand palette source:** this skin maps to a five-color brand palette — `jet-black #2d3142`, `silver #bfc0c0`, `white-smoke #f5f5f5`, `atomic-tangerine #eb6c36`, `blue-slate #4f5d75`. The `soft`, `rule`, and `link` tokens are derived (lighter slate, ink-at-opacity, and a saturated variant in the blue-slate hue family) to cover roles the brand palette doesn't name directly.
 
-> **Note:** The pre-baked example HTML files in `assets/` were built under an earlier skin. Regenerating them against the current `style-guide.md` is a v5.1 task. New diagrams the skill produces will use the tokens above.
+> **Note:** The example HTML files in `assets/` use the tokens above. The one exception is `example-loop-terminal.html`, which uses the terminal palette below.
 
 ### Inversion rule (light → dark)
 
-Any `rgba(28,25,23, X)` in light becomes `rgba(250,247,242, X)` in dark. Same opacities, RGB flipped. The accent gets a slight hue-shift brighter to read on dark paper.
+Any `rgba(45,49,66, X)` (ink) in light becomes `rgba(245,245,245, X)` in dark. Same opacities, RGB flipped. The accent gets a slight hue-shift brighter to read on dark paper.
 
 ### Series palette (multi-series chart types only)
 
@@ -154,10 +154,11 @@ Counting by script is still the trap. `Шкаф ODF-2` is four Cyrillic letters,
 | `stroke-thin` | `0.8` | Tag-box outlines, leaf nodes |
 | `stroke-default` | `1` | Most strokes |
 | `stroke-strong` | `1.2` | Emphasis strokes |
-| `radius-sm` | `4` | Small tags |
+| `radius-xs` | `2` | Type tags, arrow-label masks |
+| `radius-sm` | `4` | Small nodes, chips |
 | `radius-md` | `6` | Node boxes |
 | `radius-lg` | `8` | Containers, rings |
-| `grid` | `4` | Every coord, size, and gap is divisible by 4 (hard rule) |
+| `grid` | `4` | Structural geometry (node origins, sizes, gaps, padding) divides by 4; type sizes, text baselines, radii, and data-derived positions are exempt — see [layout-budget.md](layout-budget.md#4px-grid) |
 
 ---
 
