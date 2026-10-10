@@ -1,0 +1,50 @@
+# Woodpecker CI for this fork. It runs the same gates as
+# .github/workflows/ci.yml, which stays in place for upstream.
+#
+# The gate list is not copied here. scripts/run-ci-gates.py reads
+# gates.local_commands from .maintainer-policy.json, and
+# test-maintainer-policy.py fails when that list drifts from ci.yml.
+#
+# Run it on this machine with scripts/ci-local.sh. That runs woodpecker-cli
+# exec on the Docker backend, so lint-render's pixel checks run on Linux
+# Chromium (ci.yml calibrates its thresholds on Linux).
+#
+# Keep the pins in step with ci.yml: PLAYWRIGHT_VERSION, PILLOW_VERSION,
+# node-version, and Python 3.9 for the compatibility job.
+
+when:
+  - event: [push, pull_request, manual]
+
+clone:
+  - name: clone
+    image: woodpeckerci/plugin-git:2.10.0
+    settings:
+      # The version history gates read every commit, like ci.yml's fetch-depth: 0.
+      depth: 0
+      partial: false
+
+steps:
+  - name: gates
+    # The tag pins the Chromium build that Playwright 1.62.0 drives.
+    image: mcr.microsoft.com/playwright/python:v1.62.0-noble
+    environment:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    commands:
+      - pip3 install --quiet --break-system-packages "playwright==1.62.0" "Pillow==12.1.1"
+      - python3 scripts/run-ci-gates.py --group python
+
+  # After gates: build-icons.py rewrites assets this job lints.
+  - name: python39-compat
+    image: python:3.9-slim
+    depends_on: [gates]
+    commands:
+      - python scripts/test-lint-a11y.py
+      - python scripts/lint-skin.py --all --baseline
+
+  # Reads only the manifests, so it runs alongside gates.
+  - name: plugin-validate
+    image: node:22-slim
+    depends_on: []
+    commands:
+      # Same pinned command as gates.local_commands in .maintainer-policy.json.
+      - npx --yes @anthropic-ai/claude-code@2.1.229 plugin validate . --strict
